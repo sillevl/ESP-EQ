@@ -14,4 +14,9 @@ void serial_commands_init(void);
  */
 void serial_commands_print_help(void);
 
+/**
+ * Check if VU meter is enabled
+ */
+bool is_vu_meter_enabled(void);
+
 #endif // SERIAL_COMMANDS_H

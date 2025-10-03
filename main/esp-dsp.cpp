@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/i2s_std.h"
@@ -8,12 +9,16 @@
 #include "esp_err.h"
 #include "audio_config.h"
 #include "equalizer.h"
+#include "tone_generator.h"
 #include "serial_commands.h"
 
 static const char *TAG = "ESP-DSP";
 
 // Equalizer instance (exported for serial commands)
 equalizer_t equalizer;
+
+// Tone generator instance (exported for serial commands)
+tone_generator_t tone_gen;
 
 // I2S Handles
 static i2s_chan_handle_t tx_handle = NULL;  // DAC output
@@ -134,7 +139,64 @@ typedef struct {
 } audio_handles_t;
 
 /**
- * Audio processing task - Pass-through with equalizer
+ * Calculate RMS (Root Mean Square) level for VU meter
+ */
+static float calculate_rms(int32_t *buffer, int num_samples)
+{
+    float sum = 0.0f;
+    for (int i = 0; i < num_samples; i++) {
+        float sample = buffer[i] / (float)0x7FFFFF; // Normalize to -1.0 to 1.0
+        sum += sample * sample;
+    }
+    return sqrtf(sum / num_samples);
+}
+
+/**
+ * Draw VU meter in console
+ */
+static void draw_vu_meter(float left_rms, float right_rms)
+{
+    // Convert RMS to dB
+    float left_db = 20.0f * log10f(left_rms + 0.0001f);   // Add small value to avoid log(0)
+    float right_db = 20.0f * log10f(right_rms + 0.0001f);
+    
+    // Clamp to range -60dB to 0dB
+    if (left_db < -60.0f) left_db = -60.0f;
+    if (left_db > 0.0f) left_db = 0.0f;
+    if (right_db < -60.0f) right_db = -60.0f;
+    if (right_db > 0.0f) right_db = 0.0f;
+    
+    // Scale to 0-50 for display
+    int left_bars = (int)((left_db + 60.0f) / 60.0f * 50.0f);
+    int right_bars = (int)((right_db + 60.0f) / 60.0f * 50.0f);
+    
+    // Draw meter
+    printf("\rL:[");
+    for (int i = 0; i < 50; i++) {
+        if (i < left_bars) {
+            if (i < 35) printf("=");      // Green zone
+            else if (i < 45) printf("*");  // Yellow zone
+            else printf("!");              // Red zone
+        } else {
+            printf(" ");
+        }
+    }
+    printf("] R:[");
+    for (int i = 0; i < 50; i++) {
+        if (i < right_bars) {
+            if (i < 35) printf("=");
+            else if (i < 45) printf("*");
+            else printf("!");
+        } else {
+            printf(" ");
+        }
+    }
+    printf("] L:%.1fdB R:%.1fdB", left_db, right_db);
+    fflush(stdout);
+}
+
+/**
+ * Audio processing task - Pass-through with equalizer and tone generator
  */
 static void audio_passthrough_task(void *pvParameters)
 {
@@ -148,6 +210,7 @@ static void audio_passthrough_task(void *pvParameters)
     
     size_t bytes_read = 0;
     size_t bytes_written = 0;
+    int frame_count = 0;
     
     ESP_LOGI(TAG, "Audio pass-through task started");
     ESP_LOGI(TAG, "Local handles - TX: %p, RX: %p", local_tx_handle, local_rx_handle);
@@ -163,30 +226,68 @@ static void audio_passthrough_task(void *pvParameters)
     vTaskDelay(pdMS_TO_TICKS(100));
     
     ESP_LOGI(TAG, "Starting audio processing loop...");
+    ESP_LOGI(TAG, "VU Meter: Green (=), Yellow (*), Red (!)");
     
     while (1) {
-        // Read from ADC (WM8782)
-        esp_err_t ret = i2s_channel_read(local_rx_handle, audio_buffer, 
-                                         sizeof(audio_buffer), &bytes_read, portMAX_DELAY);
+        int num_samples;
         
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "I2S read error: %s (handle=%p)", esp_err_to_name(ret), local_rx_handle);
-            vTaskDelay(pdMS_TO_TICKS(10));
-            continue;
+        // Check if tone generator is enabled
+        if (tone_gen.enabled) {
+            // Generate tone directly into buffer
+            num_samples = DMA_BUFFER_SIZE;
+            tone_generator_generate(&tone_gen, audio_buffer, num_samples);
+            bytes_read = num_samples * sizeof(int32_t);
+        } else {
+            // Read from ADC (WM8782)
+            esp_err_t ret = i2s_channel_read(local_rx_handle, audio_buffer, 
+                                             sizeof(audio_buffer), &bytes_read, portMAX_DELAY);
+            
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "I2S read error: %s (handle=%p)", esp_err_to_name(ret), local_rx_handle);
+                vTaskDelay(pdMS_TO_TICKS(10));
+                continue;
+            }
+            
+            num_samples = bytes_read / sizeof(int32_t);
         }
         
-        // Process audio through equalizer
-        int num_samples = bytes_read / sizeof(int32_t);
-        equalizer_process(&equalizer, audio_buffer, num_samples);
+        // Calculate RMS for VU meter (before processing)
+        // Separate left and right channels
+        float left_sum = 0.0f, right_sum = 0.0f;
+        int left_count = 0, right_count = 0;
+        
+        for (int i = 0; i < num_samples; i += 2) {
+            float left_sample = audio_buffer[i] / (float)0x7FFFFF;
+            float right_sample = audio_buffer[i + 1] / (float)0x7FFFFF;
+            left_sum += left_sample * left_sample;
+            right_sum += right_sample * right_sample;
+            left_count++;
+            right_count++;
+        }
+        
+        float left_rms = sqrtf(left_sum / left_count);
+        float right_rms = sqrtf(right_sum / right_count);
+        
+        // Process audio through equalizer (if enabled)
+        if (equalizer.enabled) {
+            equalizer_process(&equalizer, audio_buffer, num_samples);
+        }
         
         // Write to DAC (PCM5102A)
-        ret = i2s_channel_write(local_tx_handle, audio_buffer, bytes_read, 
+        esp_err_t ret = i2s_channel_write(local_tx_handle, audio_buffer, bytes_read, 
                                &bytes_written, portMAX_DELAY);
         
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "I2S write error: %s (handle=%p)", esp_err_to_name(ret), local_tx_handle);
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
+        }
+        
+        // Update VU meter every 10 frames (~21ms at 48kHz with 511 samples)
+        frame_count++;
+        if (frame_count >= 10 && is_vu_meter_enabled()) {
+            draw_vu_meter(left_rms, right_rms);
+            frame_count = 0;
         }
         
         // Optional: Monitor buffer underruns/overruns
@@ -219,6 +320,14 @@ extern "C" void app_main(void)
     equalizer_set_band_gain(&equalizer, 3, 1.0f, SAMPLE_RATE);
     // Band 5: 12kHz (Treble) - boost by 4dB
     equalizer_set_band_gain(&equalizer, 4, 4.0f, SAMPLE_RATE);
+    
+    // Initialize tone generator
+    ESP_LOGI(TAG, "Initializing tone generator...");
+    tone_generator_init(&tone_gen, SAMPLE_RATE);
+    tone_generator_set_frequency(&tone_gen, 440.0f);  // A4 note
+    tone_generator_set_amplitude(&tone_gen, 0.5f);    // 50% volume
+    tone_generator_set_waveform(&tone_gen, WAVE_SINE);
+    tone_generator_set_enabled(&tone_gen, false);     // Start disabled
     
     ESP_LOGI(TAG, "EQ Settings:");
     ESP_LOGI(TAG, "  60Hz:   %.1f dB", equalizer.gain_db[0]);
@@ -262,8 +371,9 @@ extern "C" void app_main(void)
     }
     
     // Initialize serial command interface
-    ESP_LOGI(TAG, "Initializing serial command interface...");
+    ESP_LOGI(TAG, "Starting serial command interface...");
     serial_commands_init();
     
-    ESP_LOGI(TAG, "Audio DSP with equalizer initialized successfully");
+    ESP_LOGI(TAG, "Audio DSP with equalizer and tone generator initialized successfully");
+    ESP_LOGI(TAG, "Type 'help' in serial monitor for available commands");
 }
