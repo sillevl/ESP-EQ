@@ -8,11 +8,12 @@
 #include "esp_err.h"
 #include "audio_config.h"
 #include "equalizer.h"
+#include "serial_commands.h"
 
 static const char *TAG = "ESP-DSP";
 
-// Equalizer instance
-static equalizer_t equalizer;
+// Equalizer instance (exported for serial commands)
+equalizer_t equalizer;
 
 // I2S Handles
 static i2s_chan_handle_t tx_handle = NULL;  // DAC output
@@ -259,6 +260,10 @@ extern "C" void app_main(void)
         free(handles);
         return;
     }
+    
+    // Initialize serial command interface
+    ESP_LOGI(TAG, "Initializing serial command interface...");
+    serial_commands_init();
     
     ESP_LOGI(TAG, "Audio DSP with equalizer initialized successfully");
 }

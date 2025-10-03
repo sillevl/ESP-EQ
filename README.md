@@ -14,6 +14,8 @@ A real-time audio processing platform for ESP32 using high-quality audio codecs.
 - ✅ 24-bit audio at 48kHz sample rate (configurable up to 192kHz)
 - ✅ Low-latency audio pass-through
 - ✅ **5-Band Parametric Equalizer** (60Hz, 250Hz, 1kHz, 4kHz, 12kHz)
+- ✅ **Serial Command Interface** for real-time EQ control
+- ✅ Built-in EQ presets (Flat, Bass, Vocal, Rock, Jazz)
 - ✅ FreeRTOS-based real-time processing
 - ✅ Modular architecture for easy DSP algorithm integration
 - ✅ Professional-grade biquad IIR filters
@@ -90,6 +92,22 @@ equalizer_set_band_gain(&equalizer, 4, 4.0f, SAMPLE_RATE);   // 12kHz: +4dB
 ```
 
 See [Equalizer Documentation](docs/EQUALIZER.md) for presets and advanced usage.
+
+## Serial Command Interface
+
+Control the equalizer in real-time via serial terminal:
+
+```
+> eq show                    # Show current settings
+> eq set 0 6.0              # Boost bass (60Hz) by 6dB
+> eq set 4 4.0              # Boost treble (12kHz) by 4dB
+> eq preset rock            # Load rock preset
+> eq disable                # Bypass EQ (A/B comparison)
+> eq enable                 # Turn EQ back on
+> help                      # Show all commands
+```
+
+See [Serial Commands Documentation](docs/SERIAL_COMMANDS.md) for complete command reference.
 
 ## Adding More Audio Processing
 
