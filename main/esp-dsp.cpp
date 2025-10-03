@@ -7,8 +7,12 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "audio_config.h"
+#include "equalizer.h"
 
 static const char *TAG = "ESP-DSP";
+
+// Equalizer instance
+static equalizer_t equalizer;
 
 // I2S Handles
 static i2s_chan_handle_t tx_handle = NULL;  // DAC output
@@ -36,6 +40,14 @@ static esp_err_t init_i2s_channels(void)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to create I2S channels: %s", esp_err_to_name(ret));
         return ret;
+    }
+    
+    // Verify handles were created
+    ESP_LOGI(TAG, "I2S channels created - TX: %p, RX: %p", tx_handle, rx_handle);
+    
+    if (tx_handle == NULL || rx_handle == NULL) {
+        ESP_LOGE(TAG, "I2S handle is NULL after creation!");
+        return ESP_ERR_INVALID_STATE;
     }
     
     // Configure I2S standard mode for RX (ADC - WM8782)
@@ -114,35 +126,65 @@ static esp_err_t init_i2s_channels(void)
     return ESP_OK;
 }
 
+// Structure to pass handles to task
+typedef struct {
+    i2s_chan_handle_t tx_handle;
+    i2s_chan_handle_t rx_handle;
+} audio_handles_t;
+
 /**
- * Audio processing task - Pass-through without processing
+ * Audio processing task - Pass-through with equalizer
  */
 static void audio_passthrough_task(void *pvParameters)
 {
+    // Get handles from parameters
+    audio_handles_t *handles = (audio_handles_t *)pvParameters;
+    i2s_chan_handle_t local_tx_handle = handles->tx_handle;
+    i2s_chan_handle_t local_rx_handle = handles->rx_handle;
+    
+    // Free the parameter structure (we've copied the handles)
+    free(handles);
+    
     size_t bytes_read = 0;
     size_t bytes_written = 0;
     
     ESP_LOGI(TAG, "Audio pass-through task started");
+    ESP_LOGI(TAG, "Local handles - TX: %p, RX: %p", local_tx_handle, local_rx_handle);
+    
+    // Safety check
+    if (local_rx_handle == NULL || local_tx_handle == NULL) {
+        ESP_LOGE(TAG, "I2S handles are NULL! Cannot process audio.");
+        vTaskDelete(NULL);
+        return;
+    }
+    
+    // Add small delay to ensure I2S is fully initialized
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    ESP_LOGI(TAG, "Starting audio processing loop...");
     
     while (1) {
         // Read from ADC (WM8782)
-        esp_err_t ret = i2s_channel_read(rx_handle, audio_buffer, 
+        esp_err_t ret = i2s_channel_read(local_rx_handle, audio_buffer, 
                                          sizeof(audio_buffer), &bytes_read, portMAX_DELAY);
         
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "I2S read error: %s", esp_err_to_name(ret));
+            ESP_LOGE(TAG, "I2S read error: %s (handle=%p)", esp_err_to_name(ret), local_rx_handle);
+            vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
         
-        // Here you can add audio processing if needed
-        // For now, we just pass through the audio data
+        // Process audio through equalizer
+        int num_samples = bytes_read / sizeof(int32_t);
+        equalizer_process(&equalizer, audio_buffer, num_samples);
         
         // Write to DAC (PCM5102A)
-        ret = i2s_channel_write(tx_handle, audio_buffer, bytes_read, 
+        ret = i2s_channel_write(local_tx_handle, audio_buffer, bytes_read, 
                                &bytes_written, portMAX_DELAY);
         
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "I2S write error: %s", esp_err_to_name(ret));
+            ESP_LOGE(TAG, "I2S write error: %s (handle=%p)", esp_err_to_name(ret), local_tx_handle);
+            vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
         
@@ -156,10 +198,33 @@ static void audio_passthrough_task(void *pvParameters)
 
 extern "C" void app_main(void)
 {
-    ESP_LOGI(TAG, "ESP32 Audio Pass-Through Starting...");
+    ESP_LOGI(TAG, "ESP32 Audio DSP with 5-Band Equalizer Starting...");
     ESP_LOGI(TAG, "Sample Rate: %d Hz", SAMPLE_RATE);
     ESP_LOGI(TAG, "Channels: %d", I2S_NUM_CHANNELS);
     ESP_LOGI(TAG, "Buffer Size: %d samples", DMA_BUFFER_SIZE);
+    
+    // Initialize equalizer
+    ESP_LOGI(TAG, "Initializing 5-band equalizer...");
+    equalizer_init(&equalizer, SAMPLE_RATE);
+    
+    // Set example EQ curve (customize these values as needed)
+    // Band 1: 60Hz (Sub-bass) - boost by 3dB
+    equalizer_set_band_gain(&equalizer, 0, 3.0f, SAMPLE_RATE);
+    // Band 2: 250Hz (Bass) - boost by 2dB
+    equalizer_set_band_gain(&equalizer, 1, 2.0f, SAMPLE_RATE);
+    // Band 3: 1kHz (Mid) - neutral (0dB)
+    equalizer_set_band_gain(&equalizer, 2, 0.0f, SAMPLE_RATE);
+    // Band 4: 4kHz (Upper mid) - boost by 1dB
+    equalizer_set_band_gain(&equalizer, 3, 1.0f, SAMPLE_RATE);
+    // Band 5: 12kHz (Treble) - boost by 4dB
+    equalizer_set_band_gain(&equalizer, 4, 4.0f, SAMPLE_RATE);
+    
+    ESP_LOGI(TAG, "EQ Settings:");
+    ESP_LOGI(TAG, "  60Hz:   %.1f dB", equalizer.gain_db[0]);
+    ESP_LOGI(TAG, "  250Hz:  %.1f dB", equalizer.gain_db[1]);
+    ESP_LOGI(TAG, "  1kHz:   %.1f dB", equalizer.gain_db[2]);
+    ESP_LOGI(TAG, "  4kHz:   %.1f dB", equalizer.gain_db[3]);
+    ESP_LOGI(TAG, "  12kHz:  %.1f dB", equalizer.gain_db[4]);
     
     // Initialize I2S channels (both ADC and DAC)
     esp_err_t ret = init_i2s_channels();
@@ -168,8 +233,32 @@ extern "C" void app_main(void)
         return;
     }
     
-    // Create audio processing task
-    xTaskCreate(audio_passthrough_task, "audio_task", 4096, NULL, 5, NULL);
+    // Verify handles are valid before creating task
+    ESP_LOGI(TAG, "Verifying I2S handles before task creation - TX: %p, RX: %p", tx_handle, rx_handle);
     
-    ESP_LOGI(TAG, "Audio pass-through initialized successfully");
+    if (tx_handle == NULL || rx_handle == NULL) {
+        ESP_LOGE(TAG, "I2S handles are NULL after initialization!");
+        return;
+    }
+    
+    // Allocate structure to pass handles to task
+    audio_handles_t *handles = (audio_handles_t *)malloc(sizeof(audio_handles_t));
+    if (handles == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for task parameters");
+        return;
+    }
+    
+    handles->tx_handle = tx_handle;
+    handles->rx_handle = rx_handle;
+    
+    // Create audio processing task with handles as parameter
+    BaseType_t task_created = xTaskCreate(audio_passthrough_task, "audio_task", 4096, handles, 5, NULL);
+    
+    if (task_created != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create audio task");
+        free(handles);
+        return;
+    }
+    
+    ESP_LOGI(TAG, "Audio DSP with equalizer initialized successfully");
 }

@@ -13,9 +13,10 @@ A real-time audio processing platform for ESP32 using high-quality audio codecs.
 - ✅ Dual I2S interface (simultaneous input and output)
 - ✅ 24-bit audio at 48kHz sample rate (configurable up to 192kHz)
 - ✅ Low-latency audio pass-through
+- ✅ **5-Band Parametric Equalizer** (60Hz, 250Hz, 1kHz, 4kHz, 12kHz)
 - ✅ FreeRTOS-based real-time processing
 - ✅ Modular architecture for easy DSP algorithm integration
-- 🚧 Audio effects processing (coming soon)
+- ✅ Professional-grade biquad IIR filters
 
 ## Quick Start
 
@@ -75,21 +76,39 @@ Change sample rate in `main/audio_config.h`:
 #define SAMPLE_RATE     48000  // 44100, 48000, 96000, or 192000
 ```
 
-## Adding Audio Processing
+## Using the Equalizer
 
-The current implementation is a pass-through. To add processing:
+The system includes a professional 5-band equalizer. Customize the EQ curve in `app_main()`:
+
+```cpp
+// Adjust gains for each band (-12dB to +12dB)
+equalizer_set_band_gain(&equalizer, 0, 3.0f, SAMPLE_RATE);   // 60Hz: +3dB
+equalizer_set_band_gain(&equalizer, 1, 2.0f, SAMPLE_RATE);   // 250Hz: +2dB
+equalizer_set_band_gain(&equalizer, 2, 0.0f, SAMPLE_RATE);   // 1kHz: 0dB
+equalizer_set_band_gain(&equalizer, 3, 1.0f, SAMPLE_RATE);   // 4kHz: +1dB
+equalizer_set_band_gain(&equalizer, 4, 4.0f, SAMPLE_RATE);   // 12kHz: +4dB
+```
+
+See [Equalizer Documentation](docs/EQUALIZER.md) for presets and advanced usage.
+
+## Adding More Audio Processing
+
+To add additional effects beyond the equalizer:
 
 1. Open `main/esp-dsp.cpp`
 2. Find the `audio_passthrough_task()` function
-3. Add your DSP code between the read and write operations:
+3. Add your DSP code after the equalizer:
 
 ```cpp
 // Read from ADC
 i2s_channel_read(rx_handle, audio_buffer, sizeof(audio_buffer), &bytes_read, portMAX_DELAY);
 
-// Add your processing here:
+// Process through equalizer
+equalizer_process(&equalizer, audio_buffer, num_samples);
+
+// Add more processing here:
 // Example: Simple volume control
-for (int i = 0; i < DMA_BUFFER_SIZE; i++) {
+for (int i = 0; i < num_samples; i++) {
     audio_buffer[i] = (audio_buffer[i] * volume) >> 8;
 }
 

@@ -72,15 +72,20 @@ Replace `COM3` with your ESP32's serial port.
 
 ## Step 5: Test
 
-You should hear your audio source playing through the output with about 85ms latency.
+You should hear your audio source playing through the output with about 85ms latency and EQ processing applied.
 
 Expected serial output:
 ```
-I (xxx) ESP-DSP: ESP32 Audio Pass-Through Starting...
+I (xxx) ESP-DSP: ESP32 Audio DSP with 5-Band Equalizer Starting...
 I (xxx) ESP-DSP: Sample Rate: 48000 Hz
-I (xxx) ESP-DSP: I2S ADC initialized successfully
-I (xxx) ESP-DSP: I2S DAC initialized successfully
-I (xxx) ESP-DSP: Audio pass-through task started
+I (xxx) ESP-DSP: Initializing 5-band equalizer...
+I (xxx) ESP-DSP: EQ Settings:
+I (xxx) ESP-DSP:   60Hz:   3.0 dB
+I (xxx) ESP-DSP:   250Hz:  2.0 dB
+I (xxx) ESP-DSP:   1kHz:   0.0 dB
+I (xxx) ESP-DSP:   4kHz:   1.0 dB
+I (xxx) ESP-DSP:   12kHz:  4.0 dB
+I (xxx) ESP-DSP: I2S channels initialized successfully
 ```
 
 ## Troubleshooting
@@ -102,10 +107,11 @@ I (xxx) ESP-DSP: Audio pass-through task started
 
 ## Next Steps
 
-1. **Customize pins**: Edit `main/audio_config.h`
-2. **Change sample rate**: Edit `SAMPLE_RATE` in `audio_config.h`
-3. **Add effects**: See `docs/ADDING_EFFECTS.md`
-4. **Lower latency**: Reduce `DMA_BUFFER_SIZE` and `DMA_BUFFER_COUNT`
+1. **Adjust equalizer**: Edit EQ gains in `main/esp-dsp.cpp` - see `docs/EQUALIZER.md`
+2. **Customize pins**: Edit `main/audio_config.h`
+3. **Change sample rate**: Edit `SAMPLE_RATE` in `audio_config.h`
+4. **Add more effects**: See `docs/ADDING_EFFECTS.md`
+5. **Lower latency**: Reduce `DMA_BUFFER_SIZE` and `DMA_BUFFER_COUNT`
 
 ## Pin Reference
 
@@ -142,6 +148,7 @@ idf.py -p COM3 build flash monitor
 
 ## Documentation
 
+- 🎚️ [Equalizer Guide](docs/EQUALIZER.md) - 5-band EQ configuration and presets
 - 📖 [Hardware Setup](docs/HARDWARE_SETUP.md) - Detailed wiring guide
 - 🔧 [Build Instructions](docs/BUILD_INSTRUCTIONS.md) - Complete build guide
 - ✨ [Adding Effects](docs/ADDING_EFFECTS.md) - DSP examples
