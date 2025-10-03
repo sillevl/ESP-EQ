@@ -1,70 +1,49 @@
 #include <stdio.h>
-#include <string.h>
-#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/i2s_std.h"
-#include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_err.h"
 #include "audio_config.h"
-#include "equalizer.h"
-#include "tone_generator.h"
-#include "serial_commands.h"
 
 static const char *TAG = "ESP-DSP";
 
-// Equalizer instance (exported for serial commands)
-equalizer_t equalizer;
-
-// Tone generator instance (exported for serial commands)
-tone_generator_t tone_gen;
-
 // I2S Handles
-static i2s_chan_handle_t tx_handle = NULL;  // DAC output
-static i2s_chan_handle_t rx_handle = NULL;  // ADC input
+static i2s_chan_handle_t rx_handle = NULL;
+static i2s_chan_handle_t tx_handle = NULL;
 
 // Audio buffer
 static int32_t audio_buffer[DMA_BUFFER_SIZE];
 
 /**
- * Initialize I2S channels for both ADC and DAC
- * ESP32 has one I2S peripheral that supports both TX and RX simultaneously
- * Both channels must be created in a single i2s_new_channel() call
+ * Initialize I2S channels for ADC and DAC
  */
-static esp_err_t init_i2s_channels(void)
+static esp_err_t init_i2s(void)
 {
     ESP_LOGI(TAG, "Initializing I2S channels...");
     
-    // Configure I2S channel - create both TX and RX from same peripheral
+    // Configure I2S channels
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.dma_desc_num = DMA_BUFFER_COUNT;
     chan_cfg.dma_frame_num = DMA_BUFFER_SIZE;
     
-    // Create both TX and RX channels in single call
+    // Create RX and TX channels
     esp_err_t ret = i2s_new_channel(&chan_cfg, &tx_handle, &rx_handle);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to create I2S channels: %s", esp_err_to_name(ret));
         return ret;
     }
     
-    // Verify handles were created
-    ESP_LOGI(TAG, "I2S channels created - TX: %p, RX: %p", tx_handle, rx_handle);
+    ESP_LOGI(TAG, "I2S channels created - RX: %p, TX: %p", rx_handle, tx_handle);
     
-    if (tx_handle == NULL || rx_handle == NULL) {
-        ESP_LOGE(TAG, "I2S handle is NULL after creation!");
-        return ESP_ERR_INVALID_STATE;
-    }
-    
-    // Configure I2S standard mode for RX (ADC - WM8782)
-    ESP_LOGI(TAG, "Configuring I2S RX for ADC (WM8782)...");
+    // Configure RX (ADC - WM8782) - MSB format
     i2s_std_config_t rx_std_cfg = {
         .clk_cfg = {
             .sample_rate_hz = SAMPLE_RATE,
             .clk_src = I2S_CLK_SRC_DEFAULT,
-            .mclk_multiple = I2S_MCLK_MULTIPLE_384,  // Must be multiple of 3 for 24-bit
+            .mclk_multiple = I2S_MCLK_MULTIPLE_384,
         },
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_24BIT, I2S_SLOT_MODE_STEREO),
+        .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_24BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
             .bclk = I2S_ADC_BCLK,
@@ -85,15 +64,14 @@ static esp_err_t init_i2s_channels(void)
         return ret;
     }
     
-    // Configure I2S standard mode for TX (DAC - PCM5102A)
-    ESP_LOGI(TAG, "Configuring I2S TX for DAC (PCM5102A)...");
+    // Configure TX (DAC - PCM5102A) - MSB format (not Philips!)
     i2s_std_config_t tx_std_cfg = {
         .clk_cfg = {
             .sample_rate_hz = SAMPLE_RATE,
             .clk_src = I2S_CLK_SRC_DEFAULT,
-            .mclk_multiple = I2S_MCLK_MULTIPLE_384,  // Must be multiple of 3 for 24-bit
+            .mclk_multiple = I2S_MCLK_MULTIPLE_384,
         },
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_24BIT, I2S_SLOT_MODE_STEREO),
+        .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_24BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
             .bclk = I2S_DAC_BCLK,
@@ -114,266 +92,112 @@ static esp_err_t init_i2s_channels(void)
         return ret;
     }
     
-    // Enable RX channel
+    // Enable channels
     ret = i2s_channel_enable(rx_handle);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to enable I2S RX: %s", esp_err_to_name(ret));
         return ret;
     }
     
-    // Enable TX channel
     ret = i2s_channel_enable(tx_handle);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to enable I2S TX: %s", esp_err_to_name(ret));
         return ret;
     }
     
-    ESP_LOGI(TAG, "I2S channels initialized successfully");
+    ESP_LOGI(TAG, "I2S initialized successfully");
     return ESP_OK;
 }
 
-// Structure to pass handles to task
-typedef struct {
-    i2s_chan_handle_t tx_handle;
-    i2s_chan_handle_t rx_handle;
-} audio_handles_t;
-
 /**
- * Calculate RMS (Root Mean Square) level for VU meter
+ * Audio pass-through task with monitoring
  */
-static float calculate_rms(int32_t *buffer, int num_samples)
+static void audio_task(void *pvParameters)
 {
-    float sum = 0.0f;
-    for (int i = 0; i < num_samples; i++) {
-        float sample = buffer[i] / (float)0x7FFFFF; // Normalize to -1.0 to 1.0
-        sum += sample * sample;
-    }
-    return sqrtf(sum / num_samples);
-}
-
-/**
- * Draw VU meter in console
- */
-static void draw_vu_meter(float left_rms, float right_rms)
-{
-    // Convert RMS to dB
-    float left_db = 20.0f * log10f(left_rms + 0.0001f);   // Add small value to avoid log(0)
-    float right_db = 20.0f * log10f(right_rms + 0.0001f);
-    
-    // Clamp to range -60dB to 0dB
-    if (left_db < -60.0f) left_db = -60.0f;
-    if (left_db > 0.0f) left_db = 0.0f;
-    if (right_db < -60.0f) right_db = -60.0f;
-    if (right_db > 0.0f) right_db = 0.0f;
-    
-    // Scale to 0-50 for display
-    int left_bars = (int)((left_db + 60.0f) / 60.0f * 50.0f);
-    int right_bars = (int)((right_db + 60.0f) / 60.0f * 50.0f);
-    
-    // Draw meter
-    printf("\rL:[");
-    for (int i = 0; i < 50; i++) {
-        if (i < left_bars) {
-            if (i < 35) printf("=");      // Green zone
-            else if (i < 45) printf("*");  // Yellow zone
-            else printf("!");              // Red zone
-        } else {
-            printf(" ");
-        }
-    }
-    printf("] R:[");
-    for (int i = 0; i < 50; i++) {
-        if (i < right_bars) {
-            if (i < 35) printf("=");
-            else if (i < 45) printf("*");
-            else printf("!");
-        } else {
-            printf(" ");
-        }
-    }
-    printf("] L:%.1fdB R:%.1fdB", left_db, right_db);
-    fflush(stdout);
-}
-
-/**
- * Audio processing task - Pass-through with equalizer and tone generator
- */
-static void audio_passthrough_task(void *pvParameters)
-{
-    // Get handles from parameters
-    audio_handles_t *handles = (audio_handles_t *)pvParameters;
-    i2s_chan_handle_t local_tx_handle = handles->tx_handle;
-    i2s_chan_handle_t local_rx_handle = handles->rx_handle;
-    
-    // Free the parameter structure (we've copied the handles)
-    free(handles);
-    
     size_t bytes_read = 0;
     size_t bytes_written = 0;
     int frame_count = 0;
     
     ESP_LOGI(TAG, "Audio pass-through task started");
-    ESP_LOGI(TAG, "Local handles - TX: %p, RX: %p", local_tx_handle, local_rx_handle);
     
-    // Safety check
-    if (local_rx_handle == NULL || local_tx_handle == NULL) {
-        ESP_LOGE(TAG, "I2S handles are NULL! Cannot process audio.");
-        vTaskDelete(NULL);
-        return;
-    }
-    
-    // Add small delay to ensure I2S is fully initialized
     vTaskDelay(pdMS_TO_TICKS(100));
     
-    ESP_LOGI(TAG, "Starting audio processing loop...");
-    ESP_LOGI(TAG, "VU Meter: Green (=), Yellow (*), Red (!)");
-    
     while (1) {
-        int num_samples;
-        
-        // Check if tone generator is enabled
-        if (tone_gen.enabled) {
-            // Generate tone directly into buffer
-            num_samples = DMA_BUFFER_SIZE;
-            tone_generator_generate(&tone_gen, audio_buffer, num_samples);
-            bytes_read = num_samples * sizeof(int32_t);
-        } else {
-            // Read from ADC (WM8782)
-            esp_err_t ret = i2s_channel_read(local_rx_handle, audio_buffer, 
-                                             sizeof(audio_buffer), &bytes_read, portMAX_DELAY);
-            
-            if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "I2S read error: %s (handle=%p)", esp_err_to_name(ret), local_rx_handle);
-                vTaskDelay(pdMS_TO_TICKS(10));
-                continue;
-            }
-            
-            num_samples = bytes_read / sizeof(int32_t);
-        }
-        
-        // Calculate RMS for VU meter (before processing)
-        // Separate left and right channels
-        float left_sum = 0.0f, right_sum = 0.0f;
-        int left_count = 0, right_count = 0;
-        
-        for (int i = 0; i < num_samples; i += 2) {
-            float left_sample = audio_buffer[i] / (float)0x7FFFFF;
-            float right_sample = audio_buffer[i + 1] / (float)0x7FFFFF;
-            left_sum += left_sample * left_sample;
-            right_sum += right_sample * right_sample;
-            left_count++;
-            right_count++;
-        }
-        
-        float left_rms = sqrtf(left_sum / left_count);
-        float right_rms = sqrtf(right_sum / right_count);
-        
-        // Process audio through equalizer (if enabled)
-        if (equalizer.enabled) {
-            equalizer_process(&equalizer, audio_buffer, num_samples);
-        }
-        
-        // Write to DAC (PCM5102A)
-        esp_err_t ret = i2s_channel_write(local_tx_handle, audio_buffer, bytes_read, 
-                               &bytes_written, portMAX_DELAY);
+        // Read from ADC
+        esp_err_t ret = i2s_channel_read(rx_handle, audio_buffer, 
+                                         sizeof(audio_buffer), &bytes_read, portMAX_DELAY);
         
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "I2S write error: %s (handle=%p)", esp_err_to_name(ret), local_tx_handle);
-            vTaskDelay(pdMS_TO_TICKS(10));
+            ESP_LOGE(TAG, "I2S read error: %s", esp_err_to_name(ret));
             continue;
         }
         
-        // Update VU meter every 10 frames (~21ms at 48kHz with 511 samples)
-        frame_count++;
-        if (frame_count >= 10 && is_vu_meter_enabled()) {
-            draw_vu_meter(left_rms, right_rms);
-            frame_count = 0;
+        int num_samples = bytes_read / sizeof(int32_t);
+        
+        // Monitor audio levels
+        int32_t max_value = INT32_MIN;
+        int32_t min_value = INT32_MAX;
+        int64_t sum = 0;
+        
+        // No conversion needed - both use MSB format
+        for (int i = 0; i < num_samples; i++) {
+            int32_t sample = audio_buffer[i];
+            
+            // Extract 24-bit value for monitoring
+            int32_t sample_24bit = sample >> 8;
+            
+            // Update statistics
+            if (sample_24bit > max_value) max_value = sample_24bit;
+            if (sample_24bit < min_value) min_value = sample_24bit;
+            sum += sample_24bit;
+            
+            // // Log first 10 samples in the first frame
+            // if (frame_count == 0 && i < 10) {
+            //     ESP_LOGI(TAG, "Sample[%d]: Raw=0x%08lX, 24bit=%ld", i, sample, sample_24bit);
+            // }
         }
         
-        // Optional: Monitor buffer underruns/overruns
-        if (bytes_written != bytes_read) {
-            ESP_LOGW(TAG, "Buffer size mismatch: read %d, written %d", 
-                     bytes_read, bytes_written);
+        // Write to DAC - direct pass-through, no conversion
+        ret = i2s_channel_write(tx_handle, audio_buffer, bytes_read, &bytes_written, portMAX_DELAY);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "I2S write error: %s", esp_err_to_name(ret));
+        }
+        
+        // Report every 50 frames (~1 second)
+        frame_count++;
+        if (frame_count >= 50) {
+            int32_t dc_offset = sum / num_samples;
+            int32_t peak_to_peak = max_value - min_value;
+            
+            ESP_LOGI(TAG, "24bit - DC: %7ld, P2P: %8ld, Min: %8ld, Max: %8ld", 
+                     dc_offset, peak_to_peak, min_value, max_value);
+            
+            frame_count = 0;
         }
     }
 }
 
 extern "C" void app_main(void)
 {
-    ESP_LOGI(TAG, "ESP32 Audio DSP with 5-Band Equalizer Starting...");
+    ESP_LOGI(TAG, "ESP32 Audio Pass-Through Starting...");
     ESP_LOGI(TAG, "Sample Rate: %d Hz", SAMPLE_RATE);
-    ESP_LOGI(TAG, "Channels: %d", I2S_NUM_CHANNELS);
     ESP_LOGI(TAG, "Buffer Size: %d samples", DMA_BUFFER_SIZE);
     
-    // Initialize equalizer
-    ESP_LOGI(TAG, "Initializing 5-band equalizer...");
-    equalizer_init(&equalizer, SAMPLE_RATE);
-    
-    // Set example EQ curve (customize these values as needed)
-    // Band 1: 60Hz (Sub-bass) - boost by 3dB
-    equalizer_set_band_gain(&equalizer, 0, 3.0f, SAMPLE_RATE);
-    // Band 2: 250Hz (Bass) - boost by 2dB
-    equalizer_set_band_gain(&equalizer, 1, 2.0f, SAMPLE_RATE);
-    // Band 3: 1kHz (Mid) - neutral (0dB)
-    equalizer_set_band_gain(&equalizer, 2, 0.0f, SAMPLE_RATE);
-    // Band 4: 4kHz (Upper mid) - boost by 1dB
-    equalizer_set_band_gain(&equalizer, 3, 1.0f, SAMPLE_RATE);
-    // Band 5: 12kHz (Treble) - boost by 4dB
-    equalizer_set_band_gain(&equalizer, 4, 4.0f, SAMPLE_RATE);
-    
-    // Initialize tone generator
-    ESP_LOGI(TAG, "Initializing tone generator...");
-    tone_generator_init(&tone_gen, SAMPLE_RATE);
-    tone_generator_set_frequency(&tone_gen, 440.0f);  // A4 note
-    tone_generator_set_amplitude(&tone_gen, 0.5f);    // 50% volume
-    tone_generator_set_waveform(&tone_gen, WAVE_SINE);
-    tone_generator_set_enabled(&tone_gen, false);     // Start disabled
-    
-    ESP_LOGI(TAG, "EQ Settings:");
-    ESP_LOGI(TAG, "  60Hz:   %.1f dB", equalizer.gain_db[0]);
-    ESP_LOGI(TAG, "  250Hz:  %.1f dB", equalizer.gain_db[1]);
-    ESP_LOGI(TAG, "  1kHz:   %.1f dB", equalizer.gain_db[2]);
-    ESP_LOGI(TAG, "  4kHz:   %.1f dB", equalizer.gain_db[3]);
-    ESP_LOGI(TAG, "  12kHz:  %.1f dB", equalizer.gain_db[4]);
-    
-    // Initialize I2S channels (both ADC and DAC)
-    esp_err_t ret = init_i2s_channels();
+    // Initialize I2S
+    esp_err_t ret = init_i2s();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize I2S channels");
+        ESP_LOGE(TAG, "Failed to initialize I2S");
         return;
     }
     
-    // Verify handles are valid before creating task
-    ESP_LOGI(TAG, "Verifying I2S handles before task creation - TX: %p, RX: %p", tx_handle, rx_handle);
-    
-    if (tx_handle == NULL || rx_handle == NULL) {
-        ESP_LOGE(TAG, "I2S handles are NULL after initialization!");
-        return;
-    }
-    
-    // Allocate structure to pass handles to task
-    audio_handles_t *handles = (audio_handles_t *)malloc(sizeof(audio_handles_t));
-    if (handles == NULL) {
-        ESP_LOGE(TAG, "Failed to allocate memory for task parameters");
-        return;
-    }
-    
-    handles->tx_handle = tx_handle;
-    handles->rx_handle = rx_handle;
-    
-    // Create audio processing task with handles as parameter
-    BaseType_t task_created = xTaskCreate(audio_passthrough_task, "audio_task", 4096, handles, 5, NULL);
+    // Create audio task
+    BaseType_t task_created = xTaskCreate(audio_task, "audio_task", 4096, NULL, 5, NULL);
     
     if (task_created != pdPASS) {
         ESP_LOGE(TAG, "Failed to create audio task");
-        free(handles);
         return;
     }
     
-    // Initialize serial command interface
-    ESP_LOGI(TAG, "Starting serial command interface...");
-    serial_commands_init();
-    
-    ESP_LOGI(TAG, "Audio DSP with equalizer and tone generator initialized successfully");
-    ESP_LOGI(TAG, "Type 'help' in serial monitor for available commands");
+    ESP_LOGI(TAG, "Audio pass-through initialized");
+    ESP_LOGI(TAG, "Connect audio source to ADC and speakers to DAC");
 }
