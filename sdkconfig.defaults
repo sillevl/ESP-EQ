@@ -1,0 +1,17 @@
+# ESP32 Audio DSP Configuration
+
+# Increase main task stack size
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# FreeRTOS Configuration
+CONFIG_FREERTOS_HZ=1000
+
+# ESP32 specific
+CONFIG_ESP32_DEFAULT_CPU_FREQ_240=y
+
+# Component config
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# I2S Configuration
+# Enable I2S
+CONFIG_ESP32_I2S_ENABLE=y

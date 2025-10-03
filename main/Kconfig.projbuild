@@ -1,0 +1,18 @@
+menu "ESP-DSP Audio Configuration"
+
+    config AUDIO_SAMPLE_RATE
+        int "Audio Sample Rate (Hz)"
+        default 48000
+        help
+            Sample rate for audio processing.
+            Common values: 44100, 48000, 96000, 192000
+            
+    config AUDIO_BUFFER_SIZE
+        int "DMA Buffer Size (samples)"
+        default 1024
+        help
+            Size of each DMA buffer in samples.
+            Larger buffers = more latency but more stable.
+            Smaller buffers = less latency but may cause underruns.
+
+endmenu
