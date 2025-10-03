@@ -7,7 +7,7 @@
 #define SAMPLE_RATE     48000  // Can be changed to 44100, 48000, 96000, 192000
 #define I2S_NUM_CHANNELS 2
 #define DMA_BUFFER_COUNT 4
-#define DMA_BUFFER_SIZE  1024  // Number of samples per buffer
+#define DMA_BUFFER_SIZE  511  // Number of samples per buffer (max 511 per DMA descriptor)
 
 // Bit depth configuration
 // WM8782 supports up to 24-bit

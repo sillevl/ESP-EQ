@@ -18,26 +18,34 @@ static i2s_chan_handle_t rx_handle = NULL;  // ADC input
 static int32_t audio_buffer[DMA_BUFFER_SIZE];
 
 /**
- * Initialize I2S for ADC (WM8782) - Receive
+ * Initialize I2S channels for both ADC and DAC
+ * ESP32 has one I2S peripheral that supports both TX and RX simultaneously
+ * Both channels must be created in a single i2s_new_channel() call
  */
-static esp_err_t init_i2s_adc(void)
+static esp_err_t init_i2s_channels(void)
 {
-    ESP_LOGI(TAG, "Initializing I2S ADC (WM8782)...");
+    ESP_LOGI(TAG, "Initializing I2S channels...");
     
-    // Configure I2S RX channel
+    // Configure I2S channel - create both TX and RX from same peripheral
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.dma_desc_num = DMA_BUFFER_COUNT;
     chan_cfg.dma_frame_num = DMA_BUFFER_SIZE;
     
-    esp_err_t ret = i2s_new_channel(&chan_cfg, NULL, &rx_handle);
+    // Create both TX and RX channels in single call
+    esp_err_t ret = i2s_new_channel(&chan_cfg, &tx_handle, &rx_handle);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to create I2S RX channel: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to create I2S channels: %s", esp_err_to_name(ret));
         return ret;
     }
     
-    // Configure I2S standard mode for ADC
-    i2s_std_config_t std_cfg = {
-        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
+    // Configure I2S standard mode for RX (ADC - WM8782)
+    ESP_LOGI(TAG, "Configuring I2S RX for ADC (WM8782)...");
+    i2s_std_config_t rx_std_cfg = {
+        .clk_cfg = {
+            .sample_rate_hz = SAMPLE_RATE,
+            .clk_src = I2S_CLK_SRC_DEFAULT,
+            .mclk_multiple = I2S_MCLK_MULTIPLE_384,  // Must be multiple of 3 for 24-bit
+        },
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_24BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
@@ -53,43 +61,20 @@ static esp_err_t init_i2s_adc(void)
         },
     };
     
-    ret = i2s_channel_init_std_mode(rx_handle, &std_cfg);
+    ret = i2s_channel_init_std_mode(rx_handle, &rx_std_cfg);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize I2S RX standard mode: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to initialize I2S RX: %s", esp_err_to_name(ret));
         return ret;
     }
     
-    ret = i2s_channel_enable(rx_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to enable I2S RX channel: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    
-    ESP_LOGI(TAG, "I2S ADC initialized successfully");
-    return ESP_OK;
-}
-
-/**
- * Initialize I2S for DAC (PCM5102A) - Transmit
- */
-static esp_err_t init_i2s_dac(void)
-{
-    ESP_LOGI(TAG, "Initializing I2S DAC (PCM5102A)...");
-    
-    // Configure I2S TX channel
-    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
-    chan_cfg.dma_desc_num = DMA_BUFFER_COUNT;
-    chan_cfg.dma_frame_num = DMA_BUFFER_SIZE;
-    
-    esp_err_t ret = i2s_new_channel(&chan_cfg, &tx_handle, NULL);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to create I2S TX channel: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    
-    // Configure I2S standard mode for DAC
-    i2s_std_config_t std_cfg = {
-        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
+    // Configure I2S standard mode for TX (DAC - PCM5102A)
+    ESP_LOGI(TAG, "Configuring I2S TX for DAC (PCM5102A)...");
+    i2s_std_config_t tx_std_cfg = {
+        .clk_cfg = {
+            .sample_rate_hz = SAMPLE_RATE,
+            .clk_src = I2S_CLK_SRC_DEFAULT,
+            .mclk_multiple = I2S_MCLK_MULTIPLE_384,  // Must be multiple of 3 for 24-bit
+        },
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_24BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
@@ -105,19 +90,27 @@ static esp_err_t init_i2s_dac(void)
         },
     };
     
-    ret = i2s_channel_init_std_mode(tx_handle, &std_cfg);
+    ret = i2s_channel_init_std_mode(tx_handle, &tx_std_cfg);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize I2S TX standard mode: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to initialize I2S TX: %s", esp_err_to_name(ret));
         return ret;
     }
     
+    // Enable RX channel
+    ret = i2s_channel_enable(rx_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to enable I2S RX: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    
+    // Enable TX channel
     ret = i2s_channel_enable(tx_handle);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to enable I2S TX channel: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to enable I2S TX: %s", esp_err_to_name(ret));
         return ret;
     }
     
-    ESP_LOGI(TAG, "I2S DAC initialized successfully");
+    ESP_LOGI(TAG, "I2S channels initialized successfully");
     return ESP_OK;
 }
 
@@ -168,17 +161,10 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "Channels: %d", I2S_NUM_CHANNELS);
     ESP_LOGI(TAG, "Buffer Size: %d samples", DMA_BUFFER_SIZE);
     
-    // Initialize I2S for ADC
-    esp_err_t ret = init_i2s_adc();
+    // Initialize I2S channels (both ADC and DAC)
+    esp_err_t ret = init_i2s_channels();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize ADC");
-        return;
-    }
-    
-    // Initialize I2S for DAC
-    ret = init_i2s_dac();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize DAC");
+        ESP_LOGE(TAG, "Failed to initialize I2S channels");
         return;
     }
     
