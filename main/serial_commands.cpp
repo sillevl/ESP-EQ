@@ -33,6 +33,9 @@ void serial_commands_print_help(void)
     printf("                - Set band gain (band: 0-4, gain: -12 to +12 dB)\n");
     printf("                  Bands: 0=60Hz, 1=250Hz, 2=1kHz, 3=4kHz, 4=12kHz\n");
     printf("                  (Settings are automatically saved to flash)\n");
+    printf("  eq pregain <gain>\n");
+    printf("                - Set pre-gain applied before EQ (-12 to +12 dB)\n");
+    printf("                  (Settings are automatically saved to flash)\n");
     printf("  eq enable     - Enable equalizer processing\n");
     printf("  eq disable    - Disable equalizer (bypass)\n");
     printf("  eq reset      - Reset EQ filter state (temporary)\n");
@@ -42,6 +45,7 @@ void serial_commands_print_help(void)
     printf("\n");
     printf("Examples:\n");
     printf("  eq set 0 6.0  - Boost 60Hz by 6dB\n");
+    printf("  eq pregain 3.0 - Apply 3dB pre-gain before EQ\n");
     printf("\n");
     printf("Note: Settings are saved to flash and restored at boot.\n");
     printf("\n");
@@ -114,6 +118,7 @@ static void show_eq_settings(void)
     printf("\n");
     printf("Equalizer Settings:\n");
     printf("  Status: %s\n", equalizer.enabled ? "ENABLED" : "DISABLED (bypass)");
+    printf("  Pre-gain: %+.1f dB\n", equalizer.pre_gain_db);
     printf("\n");
     printf("  Band  | Frequency | Gain\n");
     printf("  ------|-----------|--------\n");
@@ -172,7 +177,7 @@ static void process_command(char* cmd)
         token = strtok(NULL, " ");
         if (token == NULL) {
             printf("Error: EQ command requires subcommand\n");
-            printf("Try: eq show, eq set, eq enable, eq disable, eq reset, eq preset, eq save\n");
+            printf("Try: eq show, eq set, eq pregain, eq enable, eq disable, eq reset, eq preset, eq save\n");
             return;
         }
         
@@ -235,6 +240,34 @@ static void process_command(char* cmd)
                 printf("Warning: Failed to save settings to flash\n");
             }
         }
+        else if (strcmp(token, "pregain") == 0) {
+            char* gain_str = strtok(NULL, " ");
+            
+            if (gain_str == NULL) {
+                printf("Error: Usage: eq pregain <gain>\n");
+                printf("Example: eq pregain 3.0\n");
+                return;
+            }
+            
+            float gain = atof(gain_str);
+            
+            if (gain < -12.0f || gain > 12.0f) {
+                printf("Warning: Pre-gain clamped to range -12.0 to +12.0 dB\n");
+            }
+            
+            bool success = equalizer_set_pre_gain(&equalizer, gain);
+            if (success) {
+                printf("Set pre-gain to %.1f dB\n", equalizer_get_pre_gain(&equalizer));
+                
+                // Save settings to flash
+                esp_err_t err = equalizer_save_settings(&equalizer);
+                if (err != ESP_OK) {
+                    printf("Warning: Failed to save settings to flash\n");
+                }
+            } else {
+                printf("Error: Failed to set pre-gain\n");
+            }
+        }
         else if (strcmp(token, "reset") == 0) {
             equalizer_reset(&equalizer);
             printf("Equalizer state reset (filter history cleared)\n");
@@ -264,7 +297,7 @@ static void process_command(char* cmd)
         }
         else {
             printf("Unknown EQ subcommand: %s\n", token);
-            printf("Try: eq show, eq set, eq enable, eq disable, eq reset, eq preset, eq save\n");
+            printf("Try: eq show, eq set, eq pregain, eq enable, eq disable, eq reset, eq preset, eq save\n");
         }
     }
     else {

@@ -33,6 +33,7 @@ typedef struct {
     biquad_state_t state_left[EQ_BANDS];        // State for left channel
     biquad_state_t state_right[EQ_BANDS];       // State for right channel
     float gain_db[EQ_BANDS];                    // Gain in dB for each band (-12 to +12)
+    float pre_gain_db;                          // Pre-gain in dB (-12 to +12) applied before EQ
     bool enabled;                                // Enable/disable equalizer
 } equalizer_t;
 
@@ -78,6 +79,23 @@ void equalizer_set_enabled(equalizer_t *eq, bool enabled);
  * @param eq Pointer to equalizer structure
  */
 void equalizer_reset(equalizer_t *eq);
+
+/**
+ * Set pre-gain (applied before EQ processing)
+ * 
+ * @param eq Pointer to equalizer structure
+ * @param gain_db Pre-gain in dB (-12.0 to +12.0)
+ * @return true if successful, false if parameters invalid
+ */
+bool equalizer_set_pre_gain(equalizer_t *eq, float gain_db);
+
+/**
+ * Get current pre-gain value
+ * 
+ * @param eq Pointer to equalizer structure
+ * @return Pre-gain in dB
+ */
+float equalizer_get_pre_gain(equalizer_t *eq);
 
 /**
  * Save equalizer settings to NVS flash storage
