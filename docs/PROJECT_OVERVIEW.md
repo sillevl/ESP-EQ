@@ -2,13 +2,26 @@
 
 ## ESP32 Audio DSP Platform
 
-This project implements a real-time audio processing platform using ESP32 microcontroller with professional audio codecs.
+This project implements a real-time audio processing platform using ESP32 microcontroller with professional audio codecs and a 5-band parametric equalizer.
 
-## Architecture
+## System Architecture
 
 ```
-Audio Input → WM8782 ADC → I2S → ESP32 → I2S → PCM5102A DAC → Audio Output
-                 (24-bit)         (Processing)        (32-bit)
+                    ┌─────────────────────────────────────┐
+                    │          ESP32-C3 MCU               │
+                    │                                     │
+Audio Input    →    │  ┌──────────┐    ┌──────────────┐  │    → Audio Output
+(Line Level)   →  ADC → │   I2S    │ →  │  Equalizer   │  → DAC → (Line/Headphones)
+                 WM8782 │ Hardware │    │  Processing  │  PCM5102A
+                 24-bit │          │    │   (5-band)   │  32-bit
+                        │  MCLK ──────────────────────────────┐
+                        │  BCLK ──────────────────────────────┤ Shared
+                        │  WS   ──────────────────────────────┘ Clocks
+                        │                                     │
+                        │  Serial Commands (UART/USB)         │
+                        │  ↓ Real-time EQ Control             │
+                        │  ↓ NVS Flash Storage                │
+                        └─────────────────────────────────────┘
 ```
 
 ## Key Components
@@ -38,44 +51,78 @@ Audio Input → WM8782 ADC → I2S → ESP32 → I2S → PCM5102A DAC → Audio 
 ### Software Architecture
 
 ```
-┌─────────────────────────────────────────┐
-│         ESP-IDF Framework                │
-├─────────────────────────────────────────┤
-│  FreeRTOS Task: audio_passthrough_task  │
-│  ┌───────────────────────────────────┐  │
-│  │  1. Read from ADC via I2S DMA     │  │
-│  │  2. Process audio (DSP)           │  │
-│  │  3. Write to DAC via I2S DMA      │  │
-│  └───────────────────────────────────┘  │
-├─────────────────────────────────────────┤
-│         I2S Driver (ESP-IDF)            │
-│  ┌──────────────┐    ┌──────────────┐  │
-│  │  RX Channel  │    │  TX Channel  │  │
-│  │  (ADC Input) │    │  (DAC Output)│  │
-│  └──────────────┘    └──────────────┘  │
-├─────────────────────────────────────────┤
-│            Hardware (GPIO/I2S)          │
-└─────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                 ESP-IDF Framework (v5.0+)                │
+├──────────────────────────────────────────────────────────┤
+│  FreeRTOS Tasks:                                         │
+│  ┌───────────────────────┐  ┌───────────────────────┐   │
+│  │  audio_task()         │  │  serial_commands_task()│  │
+│  │  (Priority: High)     │  │  (Priority: Normal)    │  │
+│  │                       │  │                        │  │
+│  │  1. Read from ADC     │  │  • Parse commands      │  │
+│  │  2. Shift samples     │  │  • Update EQ settings  │  │
+│  │  3. Equalizer process │◄─┤  • Save to NVS        │  │
+│  │  4. Shift back        │  │  • Display status      │  │
+│  │  5. Write to DAC      │  │                        │  │
+│  └───────────────────────┘  └───────────────────────┘   │
+├──────────────────────────────────────────────────────────┤
+│  DSP Modules:                                            │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │  Equalizer (equalizer.cpp)                       │   │
+│  │  • 5 biquad peaking filters                      │   │
+│  │  • Fixed-point processing (Q24)                  │   │
+│  │  • Direct Form II Transposed                     │   │
+│  │  • Separate state for L/R channels               │   │
+│  └──────────────────────────────────────────────────┘   │
+├──────────────────────────────────────────────────────────┤
+│  I2S Driver (ESP-IDF)                                    │
+│  ┌────────────────────┐  ┌─────────────────────────┐    │
+│  │  RX Channel (ADC)  │  │  TX Channel (DAC)       │    │
+│  │  • DMA buffering   │  │  • DMA buffering        │    │
+│  │  • 24-bit samples  │  │  • 24-bit samples       │    │
+│  │  • 8 buffers       │  │  • 8 buffers            │    │
+│  │  • 480 samples ea. │  │  • 480 samples ea.      │    │
+│  └────────────────────┘  └─────────────────────────┘    │
+│  Shared Clock Domain: MCLK (18.432MHz), BCLK, WS        │
+├──────────────────────────────────────────────────────────┤
+│  NVS Flash Storage                                       │
+│  • Equalizer settings persistence                        │
+│  • Auto-save on changes                                  │
+│  • Auto-load on boot                                     │
+├──────────────────────────────────────────────────────────┤
+│            Hardware (GPIO/I2S Peripheral)                │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ## Data Flow
 
 1. **Input Stage**
-   - Audio signal enters WM8782 ADC
-   - ADC converts analog to 24-bit digital
-   - I2S interface transfers data to ESP32
-   - DMA writes to circular buffer
+   - Analog audio signal enters WM8782 ADC
+   - ADC converts analog to 24-bit digital @ 48kHz
+   - I2S RX interface transfers data to ESP32 via DMA
+   - DMA writes to circular buffer (8 buffers × 480 samples)
+   - Synchronized by shared MCLK/BCLK/WS from ESP32
 
 2. **Processing Stage**
-   - FreeRTOS task reads buffer
-   - DSP algorithms applied (optional)
-   - Processed audio ready for output
+   - `audio_task()` FreeRTOS task (highest priority) reads buffer
+   - Samples shifted right by 8 bits for 24-bit processing
+   - Audio passed through 5-band equalizer:
+     * Each sample processed through 5 cascaded biquad filters
+     * Separate filter states for left and right channels
+     * Fixed-point arithmetic (Q24 format)
+   - Samples shifted left by 8 bits for output format
 
 3. **Output Stage**
    - Processed audio written to DMA buffer
-   - I2S interface transfers to PCM5102A
+   - I2S TX interface transfers to PCM5102A via DMA
    - DAC converts digital to analog
-   - Audio signal output
+   - Audio output to line-level or headphones
+
+4. **Control Flow**
+   - `serial_commands_task()` monitors UART for commands
+   - User commands update equalizer settings in real-time
+   - Settings automatically saved to NVS flash
+   - No audio interruption during EQ adjustments
 
 ## Memory Management
 

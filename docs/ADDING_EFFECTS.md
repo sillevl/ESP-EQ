@@ -4,17 +4,32 @@ This guide shows how to add audio processing effects to your ESP32 DSP.
 
 ## Basic Structure
 
-All audio processing happens in the `audio_passthrough_task()` function in `main/esp-dsp.cpp`:
+All audio processing happens in the `audio_task()` function in `main/esp-dsp.cpp`:
 
 ```cpp
 while (1) {
     // 1. Read audio from ADC
     i2s_channel_read(rx_handle, audio_buffer, sizeof(audio_buffer), &bytes_read, portMAX_DELAY);
     
-    // 2. Process audio here
+    int num_samples = bytes_read / sizeof(int32_t);
+    
+    // 2. Shift samples for 24-bit processing
+    for(int i = 0; i < num_samples; i++) {
+        audio_buffer[i] = audio_buffer[i] >> 8;
+    }
+    
+    // 3. Process through equalizer
+    equalizer_process(&equalizer, audio_buffer, num_samples);
+    
+    // 4. ADD YOUR CUSTOM PROCESSING HERE
     // YOUR CODE GOES HERE
     
-    // 3. Write audio to DAC
+    // 5. Shift back for output
+    for(int i = 0; i < num_samples; i++) {
+        audio_buffer[i] = audio_buffer[i] << 8;
+    }
+    
+    // 6. Write audio to DAC
     i2s_channel_write(tx_handle, audio_buffer, bytes_read, &bytes_written, portMAX_DELAY);
 }
 ```
@@ -22,13 +37,16 @@ while (1) {
 ## Audio Buffer Format
 
 - **Type**: `int32_t audio_buffer[DMA_BUFFER_SIZE]`
-- **Format**: 24-bit signed integer in 32-bit container
+- **Format**: 24-bit signed integer (after >> 8 shift, before << 8 shift)
 - **Channels**: Interleaved stereo (L, R, L, R, ...)
+- **Range**: -8388608 to +8388607 (24-bit signed)
 - **Sample layout**: 
   - `audio_buffer[0]` = Left channel sample 0
   - `audio_buffer[1]` = Right channel sample 0
   - `audio_buffer[2]` = Left channel sample 1
   - `audio_buffer[3]` = Right channel sample 1
+  
+**Important**: The bit shifting (>> 8 and << 8) converts between the hardware 32-bit format and 24-bit processing format. Add your custom effects AFTER the >> 8 shift and BEFORE the << 8 shift.
 
 ## Example Effects
 

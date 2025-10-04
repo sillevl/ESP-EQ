@@ -76,30 +76,42 @@
 ## Configuration Options
 
 ### Sample Rate
+
 Edit `main/audio_config.h` to change sample rate:
+
 ```c
-#define SAMPLE_RATE     48000  // Change to 44100, 96000, or 192000
+#define SAMPLE_RATE     48000  // Recommended: 48000 Hz
 ```
+
+**Note**: MCLK frequency will automatically scale (384 × sample rate)
 
 ### Buffer Size
+
 Adjust DMA buffer size for latency vs. stability:
+
 ```c
-#define DMA_BUFFER_SIZE  1024  // Smaller = less latency, larger = more stable
+#define DMA_BUFFER_SIZE  480   // Samples per buffer (smaller = less latency)
+#define DMA_BUFFER_COUNT 8     // Number of DMA buffers (more = more stable)
 ```
+
+**Latency calculation**: (DMA_BUFFER_SIZE × DMA_BUFFER_COUNT) / SAMPLE_RATE × 1000 ms
 
 ### Pin Configuration
-Modify pin assignments in `main/audio_config.h`:
-```c
-// ADC Pins
-#define I2S_ADC_BCLK    GPIO_NUM_26
-#define I2S_ADC_WS      GPIO_NUM_25
-#define I2S_ADC_DIN     GPIO_NUM_22
 
-// DAC Pins
-#define I2S_DAC_BCLK    GPIO_NUM_14
-#define I2S_DAC_WS      GPIO_NUM_27
-#define I2S_DAC_DOUT    GPIO_NUM_12
+Modify pin assignments in `main/audio_config.h`:
+
+```c
+// Shared clock signals (both ADC and DAC)
+#define I2S_MCLK        GPIO_NUM_10  // Master clock (18.432MHz @ 48kHz)
+#define I2S_DAC_BCLK    GPIO_NUM_5   // Bit clock (shared)
+#define I2S_DAC_WS      GPIO_NUM_6   // Word select (shared)
+
+// Data signals
+#define I2S_ADC_DIN     GPIO_NUM_4   // Data from ADC
+#define I2S_DAC_DOUT    GPIO_NUM_7   // Data to DAC
 ```
+
+**Important**: MCLK, BCLK, and WS must connect to both ADC and DAC for synchronization.
 
 ## Troubleshooting
 
@@ -117,37 +129,70 @@ Modify pin assignments in `main/audio_config.h`:
 ### Runtime Issues
 
 1. **No audio output**
-   - Check wiring connections
-   - Verify power supply to ADC/DAC
+   - Check wiring connections (especially MCLK!)
+   - Verify power supply to ADC/DAC (3.3V present?)
    - Check serial monitor for error messages
+   - Verify PCM5102A control pins are configured correctly
 
 2. **Distorted audio**
-   - May need to adjust buffer sizes
+   - Check if equalizer is set to extreme values
+   - Reduce input level
    - Check for ground loops
-   - Verify sample rate matches audio source
+   - Try `eq disable` to bypass equalizer for testing
 
 3. **Buffer underruns/overruns**
    - Increase `DMA_BUFFER_SIZE` for more stability
    - Increase `DMA_BUFFER_COUNT` for more buffering
+   - Reduce CPU load (disable debug logging)
+
+4. **Equalizer settings not saving**
+   - Check NVS initialization in serial log
+   - Verify flash is not write-protected
+   - Use `eq save` command to manually trigger save
+   - See [Persistent Settings Guide](PERSISTENT_SETTINGS.md)
 
 ## Expected Serial Output
 
 ```
 I (xxx) ESP-DSP: ESP32 Audio Pass-Through Starting...
 I (xxx) ESP-DSP: Sample Rate: 48000 Hz
-I (xxx) ESP-DSP: Channels: 2
-I (xxx) ESP-DSP: Buffer Size: 1024 samples
-I (xxx) ESP-DSP: Initializing I2S ADC (WM8782)...
-I (xxx) ESP-DSP: I2S ADC initialized successfully
-I (xxx) ESP-DSP: Initializing I2S DAC (PCM5102A)...
-I (xxx) ESP-DSP: I2S DAC initialized successfully
-I (xxx) ESP-DSP: Audio pass-through initialized successfully
+I (xxx) ESP-DSP: Buffer Size: 480 samples
+I (xxx) ESP-DSP: NVS initialized
+I (xxx) ESP-DSP: Initializing I2S channels...
+I (xxx) ESP-DSP: I2S channels created - RX: 0x3fcxxxxx, TX: 0x3fcxxxxx
+I (xxx) ESP-DSP: I2S initialized successfully with shared clock domain and MCLK
+I (xxx) ESP-DSP: MCLK: 18432000 Hz (48kHz * 384 = 18.432MHz)
+I (xxx) EQUALIZER: Equalizer settings loaded from flash:
+I (xxx) EQUALIZER:   Status: ENABLED
+I (xxx) EQUALIZER:   60Hz:   +3.0 dB
+I (xxx) EQUALIZER:   250Hz:  +2.0 dB
+I (xxx) EQUALIZER:   1kHz:   +0.0 dB
+I (xxx) EQUALIZER:   4kHz:   +1.0 dB
+I (xxx) EQUALIZER:   12kHz:  +4.0 dB
+I (xxx) ESP-DSP: Serial command interface started
+I (xxx) ESP-DSP: Audio pass-through initialized
+I (xxx) ESP-DSP: Connect audio source to ADC and speakers to DAC
 I (xxx) ESP-DSP: Audio pass-through task started
 ```
 
+## Using Serial Commands
+
+After flashing, you can control the equalizer via serial commands:
+
+```
+> help                    # Show all available commands
+> eq show                 # Display current EQ settings
+> eq set 0 6.0            # Set 60Hz band to +6dB
+> eq preset bass          # Load bass boost preset
+> eq disable              # Bypass equalizer for A/B comparison
+> eq enable               # Re-enable equalizer
+```
+
+See [Serial Commands Guide](SERIAL_COMMANDS.md) for complete reference.
+
 ## Next Steps
 
-After successful pass-through operation, you can add audio processing:
+After successful operation:
 
 1. Edit the `audio_passthrough_task()` function in `main/esp-dsp.cpp`
 2. Add DSP algorithms between the read and write operations

@@ -13,34 +13,48 @@ Get your ESP32 audio processor up and running in 5 steps!
 
 ## Step 1: Wire the Hardware
 
-### Minimum Connections
+### Shared Clock Connections (CRITICAL!)
 
-**ESP32 → WM8782 (ADC)**
+**ESP32 → BOTH WM8782 AND PCM5102A**
+
+These signals must connect to BOTH devices:
+
 ```
-GPIO26 → BCLK
-GPIO25 → WS (LRCLK)
-GPIO22 → DOUT
+GPIO10 → WM8782 MCLK  AND  PCM5102A SCK (MCLK input)
+GPIO5  → WM8782 BCLK  AND  PCM5102A BCK
+GPIO6  → WM8782 LRCLK AND  PCM5102A LRCK
+```
+
+### Data Connections
+
+**ESP32 → WM8782 (ADC Input)**
+
+```
+GPIO4  → DOUT (audio data from ADC)
 3.3V   → VDD
 GND    → GND
 ```
 
-**ESP32 → PCM5102A (DAC)**
+**ESP32 → PCM5102A (DAC Output)**
+
 ```
-GPIO14 → BCK
-GPIO27 → LRCK  
-GPIO12 → DIN
+GPIO7  → DIN (audio data to DAC)
 3.3V   → VIN
 GND    → GND
 ```
 
-**PCM5102A Hardware Mode Pins** (tie these)
+### PCM5102A Control Pins
+
+Hardwire these pins on the PCM5102A:
+
 ```
-SCK  → GND
-FLT  → GND
-DEMP → GND
-XSMT → 3.3V
-FMT  → GND
+FLT  → GND (Normal filter)
+DEMP → GND (No de-emphasis)
+XSMT → 3.3V (Normal operation)
+FMT  → GND (I2S format)
 ```
+
+**Note**: SCK on PCM5102A is used as MCLK input (connected to GPIO10).
 
 ## Step 2: Set Up ESP-IDF
 
@@ -72,21 +86,43 @@ Replace `COM3` with your ESP32's serial port.
 
 ## Step 5: Test
 
-You should hear your audio source playing through the output with about 85ms latency and EQ processing applied.
+You should hear your audio source playing through the output with ~80ms latency and EQ processing applied.
 
 Expected serial output:
+
 ```
-I (xxx) ESP-DSP: ESP32 Audio DSP with 5-Band Equalizer Starting...
+I (xxx) ESP-DSP: ESP32 Audio Pass-Through Starting...
 I (xxx) ESP-DSP: Sample Rate: 48000 Hz
-I (xxx) ESP-DSP: Initializing 5-band equalizer...
-I (xxx) ESP-DSP: EQ Settings:
-I (xxx) ESP-DSP:   60Hz:   3.0 dB
-I (xxx) ESP-DSP:   250Hz:  2.0 dB
-I (xxx) ESP-DSP:   1kHz:   0.0 dB
-I (xxx) ESP-DSP:   4kHz:   1.0 dB
-I (xxx) ESP-DSP:   12kHz:  4.0 dB
-I (xxx) ESP-DSP: I2S channels initialized successfully
+I (xxx) ESP-DSP: Buffer Size: 480 samples
+I (xxx) ESP-DSP: NVS initialized
+I (xxx) ESP-DSP: Initializing I2S channels...
+I (xxx) ESP-DSP: I2S initialized successfully with shared clock domain and MCLK
+I (xxx) ESP-DSP: MCLK: 18432000 Hz (48kHz * 384 = 18.432MHz)
+I (xxx) EQUALIZER: Equalizer settings loaded from flash
+I (xxx) EQUALIZER:   Status: ENABLED
+I (xxx) EQUALIZER:   60Hz:   +3.0 dB
+I (xxx) EQUALIZER:   250Hz:  +2.0 dB
+I (xxx) EQUALIZER:   1kHz:   +0.0 dB
+I (xxx) EQUALIZER:   4kHz:   +1.0 dB
+I (xxx) EQUALIZER:   12kHz:  +4.0 dB
+I (xxx) ESP-DSP: Serial command interface started
+I (xxx) ESP-DSP: Audio pass-through task started
 ```
+
+## Step 6: Control the Equalizer
+
+Use serial commands to adjust the EQ in real-time:
+
+```
+> eq show                  # Display current settings
+> eq preset bass           # Load bass boost preset
+> eq set 0 6.0             # Set 60Hz to +6dB
+> eq disable               # Bypass for A/B comparison
+> eq enable                # Turn EQ back on
+> help                     # Show all commands
+```
+
+All settings are automatically saved to flash!
 
 ## Troubleshooting
 

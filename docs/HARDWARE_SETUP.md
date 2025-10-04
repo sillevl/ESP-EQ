@@ -1,78 +1,146 @@
 # Hardware Setup Guide
 
+## Architecture Overview
+
+This project uses a **shared I2S clock domain** where both the ADC and DAC are synchronized using the same clock signals. The ESP32 generates MCLK, BCLK, and WS (word select) which are shared between both audio codecs for jitter-free audio.
+
 ## Components
 
 ### WM8782 ADC (24-bit 192 kHz Stereo ADC)
 - **Data Format**: I2S
-- **Operating Mode**: Slave
+- **Operating Mode**: Slave (receives clocks from ESP32)
 - **Power Supply**: 3.3V or 5V (check your module)
+- **Requires**: MCLK for optimal operation
 
 ### PCM5102A DAC (32-bit 384 kHz Stereo DAC)
 - **Data Format**: I2S
-- **Operating Mode**: Can be hardware or I2S controlled
+- **Operating Mode**: Hardware mode (control pins hardwired)
 - **Power Supply**: 3.3V or 5V (check your module)
+- **Features**: Internal PLL for jitter reduction
 
 ## Wiring Diagram
 
-### ESP32 to WM8782 (ADC Input)
+### Shared Clock Signals (ESP32 to Both ADC and DAC)
+
+**CRITICAL**: These signals connect to BOTH the ADC and DAC:
+
+```
+ESP32 Pin      WM8782         PCM5102A
+---------      ------         --------
+GPIO10   --->  MCLK    AND    SCK (MCLK input)
+GPIO5    --->  BCLK    AND    BCK
+GPIO6    --->  LRCLK   AND    LRCK
+```
+
+### Data Signals (Separate for each device)
+
+**ADC Input (WM8782 → ESP32)**:
 ```
 ESP32          WM8782
 ------         ------
-GPIO26  --->   BCLK  (Bit Clock)
-GPIO25  --->   LRCLK (Word Select / Frame Clock)
-GPIO22  <---   DOUT  (Data Output from ADC)
+GPIO4   <---   DOUT  (Audio data from ADC)
 3.3V    --->   VDD
 GND     --->   GND
 ```
 
-### ESP32 to PCM5102A (DAC Output)
+**DAC Output (ESP32 → PCM5102A)**:
 ```
 ESP32          PCM5102A
 ------         --------
-GPIO14  --->   BCK   (Bit Clock)
-GPIO27  --->   LRCK  (Word Select)
-GPIO12  --->   DIN   (Data Input)
+GPIO7   --->   DIN   (Audio data to DAC)
 3.3V    --->   VIN
 GND     --->   GND
-
-For hardware mode (no MCU control needed):
-SCK  --->  GND (I2S mode)
-FLT  --->  GND (Normal filter)
-DEMP --->  GND (No de-emphasis)
-XSMT --->  3.3V (Normal operation)
-FMT  --->  GND (I2S format)
 ```
 
-## Notes
+### PCM5102A Control Pins (Hardware Mode)
 
-1. **Power Supply**: Ensure clean power supply for both ADC and DAC. Consider using separate voltage regulators for analog components.
+Hardwire these pins on the PCM5102A module:
 
-2. **Grounding**: Use a common ground for all components. Consider star grounding for better audio quality.
+```
+PCM5102A Pin   Connection
+------------   ----------
+FLT      --->  GND (Normal filter)
+DEMP     --->  GND (No de-emphasis)
+XSMT     --->  3.3V (Normal operation)
+FMT      --->  GND (I2S format)
+```
 
-3. **PCM5102A Configuration**: The PCM5102A can be used in hardware mode by hardwiring the control pins. This is the simplest setup.
+**Note**: SCK is used as MCLK input on PCM5102A (connected to GPIO10).
 
-4. **WM8782 Configuration**: The WM8782 is typically in hardware mode with control pins set via resistors/jumpers on the module.
+## Complete Wiring Summary
 
-5. **Signal Levels**: Both devices work with 3.3V logic levels, which is compatible with ESP32.
+```
+ESP32-C3       WM8782 ADC     PCM5102A DAC
+--------       ----------     ------------
+GPIO10   --->  MCLK     AND   SCK (MCLK)
+GPIO5    --->  BCLK     AND   BCK
+GPIO6    --->  LRCLK    AND   LRCK
+GPIO4    <---  DOUT
+GPIO7    --->               DIN
+3.3V     --->  VDD      AND   VIN
+GND      --->  GND      AND   GND
 
-6. **Decoupling Capacitors**: Add 0.1µF ceramic capacitors near VDD pins of each IC.
+                         PCM5102A Control Pins:
+                         FLT  --> GND
+                         DEMP --> GND
+                         XSMT --> 3.3V
+                         FMT  --> GND
+```
 
-7. **Audio Connections**: 
-   - ADC input: Connect line-level audio source (≈2Vrms max)
-   - DAC output: Can drive headphones or line-level input to amplifier
+## Important Notes
+
+### 1. Shared Clock Domain
+**CRITICAL**: MCLK, BCLK, and LRCLK must be connected to BOTH the ADC and DAC. This ensures:
+- Perfect synchronization between input and output
+- Eliminates sample rate conversion issues
+- Minimizes jitter and audio artifacts
+
+### 2. Master Clock (MCLK)
+- ESP32 generates 18.432MHz MCLK (384 × 48kHz sample rate)
+- WM8782 requires MCLK for proper operation
+- PCM5102A uses MCLK input via SCK pin
+- **Do not skip MCLK connection** - it's essential for audio quality
+
+### 3. Power Supply
+- Use clean, stable power supply for both ADC and DAC
+- Consider separate voltage regulators for analog components
+- Add 0.1µF ceramic capacitors near VDD pins of each IC
+- Recommended: 3.3V for best compatibility with ESP32
+
+### 4. Grounding
+- Use a common ground for all components
+- Consider star grounding topology for better audio quality
+- Avoid ground loops
+
+### 5. Audio Connections
+- **ADC input**: Connect line-level audio source (≈2Vrms max)
+- **DAC output**: Can drive headphones or line-level input to amplifier
+- Use shielded audio cables for longer connections
+
+### 6. Signal Integrity
+- Keep I2S signal traces short
+- Use proper pull-ups/pull-downs if experiencing signal integrity issues
+- Avoid running I2S signals parallel to high-speed digital signals
 
 ## Pin Customization
 
 To change pin assignments, edit `main/audio_config.h`:
-```c
-#define I2S_ADC_BCLK    GPIO_NUM_26
-#define I2S_ADC_WS      GPIO_NUM_25
-#define I2S_ADC_DIN     GPIO_NUM_22
 
-#define I2S_DAC_BCLK    GPIO_NUM_14
-#define I2S_DAC_WS      GPIO_NUM_27
-#define I2S_DAC_DOUT    GPIO_NUM_12
+```c
+// Shared clock signals
+#define I2S_MCLK        GPIO_NUM_10  // Master clock
+#define I2S_DAC_BCLK    GPIO_NUM_5   // Bit clock (shared)
+#define I2S_DAC_WS      GPIO_NUM_6   // Word select (shared)
+
+// Data signals
+#define I2S_ADC_DIN     GPIO_NUM_4   // Data from ADC
+#define I2S_DAC_DOUT    GPIO_NUM_7   // Data to DAC
 ```
+
+**Note**: ESP32-C3 has limited GPIO pins. Choose pins that don't conflict with:
+- UART/USB (GPIO18, GPIO19 on ESP32-C3)
+- Strapping pins
+- SPI flash pins
 
 ## Testing
 
