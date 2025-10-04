@@ -163,32 +163,6 @@ Example: (1024 * 4) / 48000 * 1000 = 85.3ms
 
 ### Testing and Debugging
 
-#### Test Signal Generator
-
-Add this to generate a test tone (440Hz sine wave):
-
-```cpp
-#include <math.h>
-
-void generate_test_tone(int32_t* buffer, int size) {
-    static float phase = 0.0f;
-    const float freq = 440.0f;  // A4 note
-    const int32_t amplitude = 1 << 22;  // ~50% of full scale
-    
-    for (int i = 0; i < size; i += 2) {
-        int32_t sample = (int32_t)(amplitude * sinf(phase));
-        buffer[i] = sample;      // Left
-        buffer[i + 1] = sample;  // Right
-        
-        phase += (2.0f * M_PI * freq) / SAMPLE_RATE;
-        if (phase >= 2.0f * M_PI) phase -= 2.0f * M_PI;
-    }
-}
-
-// Use in audio task instead of i2s_channel_read():
-generate_test_tone(audio_buffer, DMA_BUFFER_SIZE);
-i2s_channel_write(tx_handle, audio_buffer, bytes_read, &bytes_written, portMAX_DELAY);
-```
 
 #### Signal Level Monitoring
 

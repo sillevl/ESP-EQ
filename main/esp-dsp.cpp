@@ -19,7 +19,6 @@ static i2s_chan_handle_t tx_handle = NULL;
 
 // Global instances accessible to serial_commands
 equalizer_t equalizer;  // Changed from 'eq' to 'equalizer' and made non-static
-tone_generator_t tone_gen;
 
 // Audio buffer
 static int32_t audio_buffer[DMA_BUFFER_SIZE];
@@ -186,10 +185,6 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "Failed to initialize I2S");
         return;
     }
-
-    // Initialize tone generator
-    tone_generator_init(&tone_gen, SAMPLE_RATE);
-    ESP_LOGI(TAG, "Tone generator initialized");
 
     // Initialize equalizer
     equalizer_init(&equalizer, SAMPLE_RATE);

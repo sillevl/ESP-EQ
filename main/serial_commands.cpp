@@ -1,6 +1,5 @@
 #include "serial_commands.h"
 #include "equalizer.h"
-#include "tone_generator.h"
 #include "audio_config.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -13,7 +12,6 @@ static const char *TAG = "CMD";
 
 // External references
 extern equalizer_t equalizer;
-extern tone_generator_t tone_gen;
 
 // VU meter state (add near the top with other external variables)
 static bool vu_meter_enabled = true;
@@ -28,7 +26,6 @@ void serial_commands_print_help(void)
     printf("System Commands:\n");
     printf("  help          - Show this help message\n");
     printf("  status        - Show system status\n");
-    printf("  vu on/off     - Enable/disable VU meter\n");
     printf("\n");
     printf("Equalizer Commands:\n");
     printf("  eq show       - Display current EQ settings\n");
@@ -41,21 +38,8 @@ void serial_commands_print_help(void)
     printf("  eq preset <name>\n");
     printf("                - Load EQ preset (flat, bass, vocal, rock, jazz)\n");
     printf("\n");
-    printf("Tone Generator Commands:\n");
-    printf("  tone on       - Enable tone generator (replaces ADC input)\n");
-    printf("  tone off      - Disable tone generator (use ADC input)\n");
-    printf("  tone freq <hz>\n");
-    printf("                - Set tone frequency (20-20000 Hz)\n");
-    printf("  tone amp <level>\n");
-    printf("                - Set amplitude (0.0-1.0)\n");
-    printf("  tone wave <type>\n");
-    printf("                - Set waveform (sine, square, triangle, sawtooth)\n");
-    printf("  tone show     - Show tone generator settings\n");
-    printf("\n");
     printf("Examples:\n");
     printf("  eq set 0 6.0  - Boost 60Hz by 6dB\n");
-    printf("  tone freq 1000- Generate 1kHz tone\n");
-    printf("  vu off        - Hide VU meter\n");
     printf("\n");
 }
 
@@ -149,19 +133,6 @@ static void show_system_status(void)
     printf("\n");
 }
 
-static void show_tone_settings(void)
-{
-    const char* wave_names[] = {"Sine", "Square", "Triangle", "Sawtooth"};
-    
-    printf("\n");
-    printf("Tone Generator Settings:\n");
-    printf("  Status: %s\n", tone_gen.enabled ? "ENABLED" : "DISABLED");
-    printf("  Frequency: %.1f Hz\n", tone_gen.frequency);
-    printf("  Amplitude: %.2f (%.1f%%)\n", tone_gen.amplitude, tone_gen.amplitude * 100.0f);
-    printf("  Waveform: %s\n", wave_names[tone_gen.waveform]);
-    printf("  Sample Rate: %d Hz\n", (int) tone_gen.sample_rate);
-    printf("\n");
-}
 
 static void process_command(char* cmd)
 {
@@ -258,119 +229,6 @@ static void process_command(char* cmd)
         else {
             printf("Unknown EQ subcommand: %s\n", token);
             printf("Try: eq show, eq set, eq enable, eq disable, eq reset, eq preset\n");
-        }
-    }
-    else if (strcmp(token, "tone") == 0) {
-        token = strtok(NULL, " ");
-        if (token == NULL) {
-            printf("Error: Tone command requires subcommand\n");
-            printf("Try: tone on, tone off, tone freq, tone amp, tone wave, tone show\n");
-            return;
-        }
-        
-        if (strcmp(token, "on") == 0) {
-            tone_generator_set_enabled(&tone_gen, true);
-            printf("Tone generator enabled\n");
-            printf("  Frequency: %.1f Hz\n", tone_gen.frequency);
-            printf("  Amplitude: %.2f\n", tone_gen.amplitude);
-        }
-        else if (strcmp(token, "off") == 0) {
-            tone_generator_set_enabled(&tone_gen, false);
-            printf("Tone generator disabled (pass-through mode)\n");
-        }
-        else if (strcmp(token, "freq") == 0) {
-            char* freq_str = strtok(NULL, " ");
-            if (freq_str == NULL) {
-                printf("Error: Usage: tone freq <hz>\n");
-                printf("Example: tone freq 1000\n");
-                return;
-            }
-            
-            float freq = atof(freq_str);
-            
-            if (freq < 20.0f || freq > 20000.0f) {
-                printf("Error: Frequency must be between 20 and 20000 Hz\n");
-                return;
-            }
-            
-            tone_generator_set_frequency(&tone_gen, freq);
-            printf("Set tone frequency to %.1f Hz\n", freq);
-        }
-        else if (strcmp(token, "amp") == 0) {
-            char* amp_str = strtok(NULL, " ");
-            if (amp_str == NULL) {
-                printf("Error: Usage: tone amp <level>\n");
-                printf("Example: tone amp 0.3\n");
-                return;
-            }
-            
-            float amp = atof(amp_str);
-            
-            if (amp < 0.0f || amp > 1.0f) {
-                printf("Error: Amplitude must be between 0.0 and 1.0\n");
-                return;
-            }
-            
-            tone_generator_set_amplitude(&tone_gen, amp);
-            printf("Set tone amplitude to %.2f (%.1f%%)\n", amp, amp * 100.0f);
-        }
-        else if (strcmp(token, "wave") == 0) {
-            char* wave_str = strtok(NULL, " ");
-            if (wave_str == NULL) {
-                printf("Error: Usage: tone wave <type>\n");
-                printf("Available: sine, square, triangle, sawtooth\n");
-                return;
-            }
-            
-            waveform_t waveform;
-            if (strcmp(wave_str, "sine") == 0) {
-                waveform = WAVE_SINE;
-            }
-            else if (strcmp(wave_str, "square") == 0) {
-                waveform = WAVE_SQUARE;
-            }
-            else if (strcmp(wave_str, "triangle") == 0) {
-                waveform = WAVE_TRIANGLE;
-            }
-            else if (strcmp(wave_str, "sawtooth") == 0) {
-                waveform = WAVE_SAWTOOTH;
-            }
-            else {
-                printf("Error: Unknown waveform '%s'\n", wave_str);
-                printf("Available: sine, square, triangle, sawtooth\n");
-                return;
-            }
-            
-            tone_generator_set_waveform(&tone_gen, waveform);
-            const char* wave_names[] = {"Sine", "Square", "Triangle", "Sawtooth"};
-            printf("Set waveform to %s\n", wave_names[waveform]);
-        }
-        else if (strcmp(token, "show") == 0) {
-            show_tone_settings();
-        }
-        else {
-            printf("Unknown tone subcommand: %s\n", token);
-            printf("Try: tone on, tone off, tone freq, tone amp, tone wave, tone show\n");
-        }
-    }
-    else if (strcmp(token, "vu") == 0) {
-        token = strtok(NULL, " ");
-        if (token == NULL) {
-            printf("Error: VU command requires on/off\n");
-            return;
-        }
-        
-        if (strcmp(token, "on") == 0) {
-            vu_meter_enabled = true;
-            printf("VU meter enabled\n");
-        }
-        else if (strcmp(token, "off") == 0) {
-            vu_meter_enabled = false;
-            printf("\nVU meter disabled\n");
-        }
-        else {
-            printf("Error: Unknown VU command '%s'\n", token);
-            printf("Try: vu on, vu off\n");
         }
     }
     else {
