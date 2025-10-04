@@ -9,6 +9,7 @@
 #include "audio_config.h"
 #include "esp_pm.h"
 #include "equalizer.h"
+#include "serial_commands.h"
 
 static const char *TAG = "ESP-DSP";
 
@@ -16,7 +17,9 @@ static const char *TAG = "ESP-DSP";
 static i2s_chan_handle_t rx_handle = NULL;
 static i2s_chan_handle_t tx_handle = NULL;
 
-static equalizer_t eq;
+// Global instances accessible to serial_commands
+equalizer_t equalizer;  // Changed from 'eq' to 'equalizer' and made non-static
+tone_generator_t tone_gen;
 
 // Audio buffer
 static int32_t audio_buffer[DMA_BUFFER_SIZE];
@@ -133,7 +136,7 @@ static void audio_task(void *pvParameters)
             // audio_buffer[i] = __builtin_bswap32(audio_buffer[i]);
         }
 
-        equalizer_process(&eq, audio_buffer, num_samples);
+        equalizer_process(&equalizer, audio_buffer, num_samples);
 
         // // Debug: Log first sample before and after EQ (only occasionally)
         // static int debug_counter = 0;
@@ -184,10 +187,18 @@ extern "C" void app_main(void)
         return;
     }
 
-    equalizer_init(&eq, SAMPLE_RATE);
-    
-    equalizer_set_enabled(&eq, true);  // ENABLED for testing
+    // Initialize tone generator
+    tone_generator_init(&tone_gen, SAMPLE_RATE);
+    ESP_LOGI(TAG, "Tone generator initialized");
+
+    // Initialize equalizer
+    equalizer_init(&equalizer, SAMPLE_RATE);
+    equalizer_set_enabled(&equalizer, true);  // ENABLED for testing
     ESP_LOGI(TAG, "Equalizer enabled");
+    
+    // Initialize serial command interface
+    serial_commands_init();
+    ESP_LOGI(TAG, "Serial command interface started");
     
     // Create audio task with high priority
     BaseType_t task_created = xTaskCreatePinnedToCore(
