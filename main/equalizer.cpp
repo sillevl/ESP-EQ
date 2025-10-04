@@ -1,9 +1,19 @@
 #include "equalizer.h"
 #include <string.h>
 #include <math.h>
+#include "nvs_flash.h"
+#include "nvs.h"
+#include "esp_log.h"
 
 // Quality factor for peaking filters
 #define Q_FACTOR 0.707f  // Butterworth response (wider bandwidth)
+
+// NVS storage keys
+#define NVS_NAMESPACE "eq_settings"
+#define NVS_KEY_ENABLED "enabled"
+#define NVS_KEY_BAND_PREFIX "band_"
+
+static const char *TAG = "EQUALIZER";
 
 /**
  * Calculate biquad peaking filter coefficients
@@ -147,4 +157,106 @@ void equalizer_reset(equalizer_t *eq)
         memset(&eq->state_left[i], 0, sizeof(biquad_state_t));
         memset(&eq->state_right[i], 0, sizeof(biquad_state_t));
     }
+}
+
+esp_err_t equalizer_save_settings(equalizer_t *eq)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err;
+    
+    // Open NVS
+    err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error opening NVS handle: %s", esp_err_to_name(err));
+        return err;
+    }
+    
+    // Save enabled state
+    err = nvs_set_u8(nvs_handle, NVS_KEY_ENABLED, eq->enabled ? 1 : 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error saving enabled state: %s", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return err;
+    }
+    
+    // Save band gains (convert float to int32 to store in NVS)
+    for (int i = 0; i < EQ_BANDS; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "%s%d", NVS_KEY_BAND_PREFIX, i);
+        
+        // Store gain as fixed-point (multiply by 100 to preserve 2 decimal places)
+        int32_t gain_fixed = (int32_t)(eq->gain_db[i] * 100.0f);
+        err = nvs_set_i32(nvs_handle, key, gain_fixed);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Error saving band %d gain: %s", i, esp_err_to_name(err));
+            nvs_close(nvs_handle);
+            return err;
+        }
+    }
+    
+    // Commit changes to flash
+    err = nvs_commit(nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error committing to NVS: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "Equalizer settings saved to flash");
+    }
+    
+    nvs_close(nvs_handle);
+    return err;
+}
+
+esp_err_t equalizer_load_settings(equalizer_t *eq, uint32_t sample_rate)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err;
+    
+    // Open NVS
+    err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGI(TAG, "No saved equalizer settings found, using defaults");
+        } else {
+            ESP_LOGE(TAG, "Error opening NVS handle: %s", esp_err_to_name(err));
+        }
+        return err;
+    }
+    
+    // Load enabled state
+    uint8_t enabled_u8 = 1;
+    err = nvs_get_u8(nvs_handle, NVS_KEY_ENABLED, &enabled_u8);
+    if (err == ESP_OK) {
+        eq->enabled = (enabled_u8 != 0);
+    }
+    
+    // Load band gains
+    bool settings_loaded = false;
+    for (int i = 0; i < EQ_BANDS; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "%s%d", NVS_KEY_BAND_PREFIX, i);
+        
+        int32_t gain_fixed = 0;
+        err = nvs_get_i32(nvs_handle, key, &gain_fixed);
+        if (err == ESP_OK) {
+            // Convert from fixed-point back to float
+            float gain_db = (float)gain_fixed / 100.0f;
+            equalizer_set_band_gain(eq, i, gain_db, sample_rate);
+            settings_loaded = true;
+        }
+    }
+    
+    nvs_close(nvs_handle);
+    
+    if (settings_loaded) {
+        ESP_LOGI(TAG, "Equalizer settings loaded from flash:");
+        ESP_LOGI(TAG, "  Status: %s", eq->enabled ? "ENABLED" : "DISABLED");
+        ESP_LOGI(TAG, "  60Hz:   %.1f dB", eq->gain_db[0]);
+        ESP_LOGI(TAG, "  250Hz:  %.1f dB", eq->gain_db[1]);
+        ESP_LOGI(TAG, "  1kHz:   %.1f dB", eq->gain_db[2]);
+        ESP_LOGI(TAG, "  4kHz:   %.1f dB", eq->gain_db[3]);
+        ESP_LOGI(TAG, "  12kHz:  %.1f dB", eq->gain_db[4]);
+        return ESP_OK;
+    }
+    
+    return ESP_ERR_NVS_NOT_FOUND;
 }

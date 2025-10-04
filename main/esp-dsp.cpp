@@ -10,6 +10,7 @@
 #include "esp_pm.h"
 #include "equalizer.h"
 #include "serial_commands.h"
+#include "nvs_flash.h"
 
 static const char *TAG = "ESP-DSP";
 
@@ -171,6 +172,17 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "Sample Rate: %d Hz", SAMPLE_RATE);
     ESP_LOGI(TAG, "Buffer Size: %d samples", DMA_BUFFER_SIZE);
     
+    // Initialize NVS
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        // NVS partition was truncated and needs to be erased
+        ESP_LOGI(TAG, "Erasing NVS flash...");
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+    ESP_LOGI(TAG, "NVS initialized");
+    
     // Power management configuration
     esp_pm_config_t pm_config = {
         .max_freq_mhz = 240,
@@ -180,16 +192,22 @@ extern "C" void app_main(void)
     esp_pm_configure(&pm_config);
     
     // Initialize I2S
-    esp_err_t ret = init_i2s();
+    ret = init_i2s();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize I2S");
         return;
     }
 
-    // Initialize equalizer
+    // Initialize equalizer with defaults
     equalizer_init(&equalizer, SAMPLE_RATE);
-    equalizer_set_enabled(&equalizer, true);  // ENABLED for testing
-    ESP_LOGI(TAG, "Equalizer enabled");
+    
+    // Try to load saved settings from flash
+    ret = equalizer_load_settings(&equalizer, SAMPLE_RATE);
+    if (ret != ESP_OK) {
+        // No saved settings, use defaults
+        equalizer_set_enabled(&equalizer, true);
+        ESP_LOGI(TAG, "Using default equalizer settings");
+    }
     
     // Initialize serial command interface
     serial_commands_init();

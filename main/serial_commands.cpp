@@ -32,14 +32,18 @@ void serial_commands_print_help(void)
     printf("  eq set <band> <gain>\n");
     printf("                - Set band gain (band: 0-4, gain: -12 to +12 dB)\n");
     printf("                  Bands: 0=60Hz, 1=250Hz, 2=1kHz, 3=4kHz, 4=12kHz\n");
+    printf("                  (Settings are automatically saved to flash)\n");
     printf("  eq enable     - Enable equalizer processing\n");
     printf("  eq disable    - Disable equalizer (bypass)\n");
-    printf("  eq reset      - Reset EQ filter state\n");
+    printf("  eq reset      - Reset EQ filter state (temporary)\n");
     printf("  eq preset <name>\n");
     printf("                - Load EQ preset (flat, bass, vocal, rock, jazz)\n");
+    printf("  eq save       - Manually save current settings to flash\n");
     printf("\n");
     printf("Examples:\n");
     printf("  eq set 0 6.0  - Boost 60Hz by 6dB\n");
+    printf("\n");
+    printf("Note: Settings are saved to flash and restored at boot.\n");
     printf("\n");
 }
 
@@ -168,7 +172,7 @@ static void process_command(char* cmd)
         token = strtok(NULL, " ");
         if (token == NULL) {
             printf("Error: EQ command requires subcommand\n");
-            printf("Try: eq show, eq set, eq enable, eq disable, eq reset, eq preset\n");
+            printf("Try: eq show, eq set, eq enable, eq disable, eq reset, eq preset, eq save\n");
             return;
         }
         
@@ -201,6 +205,12 @@ static void process_command(char* cmd)
             if (success) {
                 const char* band_names[] = {"60Hz", "250Hz", "1kHz", "4kHz", "12kHz"};
                 printf("Set %s (band %d) to %.1f dB\n", band_names[band], band, equalizer.gain_db[band]);
+                
+                // Save settings to flash
+                esp_err_t err = equalizer_save_settings(&equalizer);
+                if (err != ESP_OK) {
+                    printf("Warning: Failed to save settings to flash\n");
+                }
             } else {
                 printf("Error: Failed to set band gain\n");
             }
@@ -208,10 +218,22 @@ static void process_command(char* cmd)
         else if (strcmp(token, "enable") == 0) {
             equalizer_set_enabled(&equalizer, true);
             printf("Equalizer enabled\n");
+            
+            // Save settings to flash
+            esp_err_t err = equalizer_save_settings(&equalizer);
+            if (err != ESP_OK) {
+                printf("Warning: Failed to save settings to flash\n");
+            }
         }
         else if (strcmp(token, "disable") == 0) {
             equalizer_set_enabled(&equalizer, false);
             printf("Equalizer disabled (bypass mode)\n");
+            
+            // Save settings to flash
+            esp_err_t err = equalizer_save_settings(&equalizer);
+            if (err != ESP_OK) {
+                printf("Warning: Failed to save settings to flash\n");
+            }
         }
         else if (strcmp(token, "reset") == 0) {
             equalizer_reset(&equalizer);
@@ -225,10 +247,24 @@ static void process_command(char* cmd)
                 return;
             }
             apply_preset(preset_name);
+            
+            // Save settings to flash
+            esp_err_t err = equalizer_save_settings(&equalizer);
+            if (err != ESP_OK) {
+                printf("Warning: Failed to save settings to flash\n");
+            }
+        }
+        else if (strcmp(token, "save") == 0) {
+            esp_err_t err = equalizer_save_settings(&equalizer);
+            if (err == ESP_OK) {
+                printf("Equalizer settings saved to flash successfully\n");
+            } else {
+                printf("Error: Failed to save settings to flash: %s\n", esp_err_to_name(err));
+            }
         }
         else {
             printf("Unknown EQ subcommand: %s\n", token);
-            printf("Try: eq show, eq set, eq enable, eq disable, eq reset, eq preset\n");
+            printf("Try: eq show, eq set, eq enable, eq disable, eq reset, eq preset, eq save\n");
         }
     }
     else {

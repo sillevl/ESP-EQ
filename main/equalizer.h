@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "esp_err.h"
 
 // 5-band equalizer frequencies (Hz)
 #define EQ_BAND_1_FREQ      60      // Sub-bass
@@ -77,5 +78,22 @@ void equalizer_set_enabled(equalizer_t *eq, bool enabled);
  * @param eq Pointer to equalizer structure
  */
 void equalizer_reset(equalizer_t *eq);
+
+/**
+ * Save equalizer settings to NVS flash storage
+ * 
+ * @param eq Pointer to equalizer structure
+ * @return ESP_OK on success, error code otherwise
+ */
+esp_err_t equalizer_save_settings(equalizer_t *eq);
+
+/**
+ * Load equalizer settings from NVS flash storage
+ * 
+ * @param eq Pointer to equalizer structure
+ * @param sample_rate Sample rate in Hz
+ * @return ESP_OK on success, ESP_ERR_NVS_NOT_FOUND if no saved settings, error code otherwise
+ */
+esp_err_t equalizer_load_settings(equalizer_t *eq, uint32_t sample_rate);
 
 #endif // EQUALIZER_H
