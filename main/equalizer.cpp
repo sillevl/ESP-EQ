@@ -8,6 +8,7 @@
 /**
  * Calculate biquad peaking filter coefficients
  * This creates a peak/dip at the specified frequency
+ * Coefficients are converted to Q24 fixed-point format
  */
 static void calculate_peaking_filter(biquad_coeffs_t *coeffs, float freq, float gain_db, 
                                      float sample_rate, float Q)
@@ -18,13 +19,20 @@ static void calculate_peaking_filter(biquad_coeffs_t *coeffs, float freq, float 
     float sin_w0 = sinf(w0);
     float alpha = sin_w0 / (2.0f * Q);
     
-    // Peaking filter coefficients
+    // Peaking filter coefficients (floating-point)
     float a0 = 1.0f + alpha / A;
-    coeffs->b0 = (1.0f + alpha * A) / a0;
-    coeffs->b1 = (-2.0f * cos_w0) / a0;
-    coeffs->b2 = (1.0f - alpha * A) / a0;
-    coeffs->a1 = (-2.0f * cos_w0) / a0;
-    coeffs->a2 = (1.0f - alpha / A) / a0;
+    float b0_f = (1.0f + alpha * A) / a0;
+    float b1_f = (-2.0f * cos_w0) / a0;
+    float b2_f = (1.0f - alpha * A) / a0;
+    float a1_f = (-2.0f * cos_w0) / a0;
+    float a2_f = (1.0f - alpha / A) / a0;
+    
+    // Convert to Q24 fixed-point (multiply by 2^24)
+    coeffs->b0 = (int32_t)(b0_f * 16777216.0f);
+    coeffs->b1 = (int32_t)(b1_f * 16777216.0f);
+    coeffs->b2 = (int32_t)(b2_f * 16777216.0f);
+    coeffs->a1 = (int32_t)(a1_f * 16777216.0f);
+    coeffs->a2 = (int32_t)(a2_f * 16777216.0f);
 }
 
 void equalizer_init(equalizer_t *eq, uint32_t sample_rate)
@@ -88,12 +96,12 @@ void equalizer_process(equalizer_t *eq, int32_t *buffer, int num_samples)
             int32_t input_l = buffer[i];
             
             // Biquad direct form II (transposed)
-            // Scale down to prevent overflow, process as fixed-point
-            int64_t temp_l = ((int64_t)c->b0 * input_l) >> 8;
-            temp_l += ((int64_t)c->b1 * state_l->x1) >> 8;
-            temp_l += ((int64_t)c->b2 * state_l->x2) >> 8;
-            temp_l -= ((int64_t)c->a1 * state_l->y1) >> 8;
-            temp_l -= ((int64_t)c->a2 * state_l->y2) >> 8;
+            // Coefficients are Q24, shift right by 24 after multiplication
+            int64_t temp_l = ((int64_t)c->b0 * input_l) >> 24;
+            temp_l += ((int64_t)c->b1 * state_l->x1) >> 24;
+            temp_l += ((int64_t)c->b2 * state_l->x2) >> 24;
+            temp_l -= ((int64_t)c->a1 * state_l->y1) >> 24;
+            temp_l -= ((int64_t)c->a2 * state_l->y2) >> 24;
             
             int32_t output_l = (int32_t)temp_l;
             
@@ -108,11 +116,11 @@ void equalizer_process(equalizer_t *eq, int32_t *buffer, int num_samples)
             // Right channel
             int32_t input_r = buffer[i + 1];
             
-            int64_t temp_r = ((int64_t)c->b0 * input_r) >> 8;
-            temp_r += ((int64_t)c->b1 * state_r->x1) >> 8;
-            temp_r += ((int64_t)c->b2 * state_r->x2) >> 8;
-            temp_r -= ((int64_t)c->a1 * state_r->y1) >> 8;
-            temp_r -= ((int64_t)c->a2 * state_r->y2) >> 8;
+            int64_t temp_r = ((int64_t)c->b0 * input_r) >> 24;
+            temp_r += ((int64_t)c->b1 * state_r->x1) >> 24;
+            temp_r += ((int64_t)c->b2 * state_r->x2) >> 24;
+            temp_r -= ((int64_t)c->a1 * state_r->y1) >> 24;
+            temp_r -= ((int64_t)c->a2 * state_r->y2) >> 24;
             
             int32_t output_r = (int32_t)temp_r;
             

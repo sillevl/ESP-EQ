@@ -14,10 +14,10 @@
 // Number of bands
 #define EQ_BANDS            5
 
-// Biquad filter coefficients structure
+// Biquad filter coefficients structure (Q24 fixed-point format)
 typedef struct {
-    float b0, b1, b2;  // Feedforward coefficients
-    float a1, a2;      // Feedback coefficients (a0 is normalized to 1)
+    int32_t b0, b1, b2;  // Feedforward coefficients (Q24 fixed-point)
+    int32_t a1, a2;      // Feedback coefficients (Q24 fixed-point, a0 is normalized to 1)
 } biquad_coeffs_t;
 
 // Biquad filter state (one per channel per band)

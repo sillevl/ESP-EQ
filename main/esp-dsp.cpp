@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <cstring>
+#include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/i2s_std.h"
@@ -7,15 +8,15 @@
 #include "esp_err.h"
 #include "audio_config.h"
 #include "esp_pm.h"
-
-#define DMA_BUFFER_SIZE 480  // Changed from 512 to 480 (divisible by many factors)
-#define DMA_BUFFER_COUNT 8
+#include "equalizer.h"
 
 static const char *TAG = "ESP-DSP";
 
 // I2S Handles - both on same peripheral
 static i2s_chan_handle_t rx_handle = NULL;
 static i2s_chan_handle_t tx_handle = NULL;
+
+static equalizer_t eq;
 
 // Audio buffer
 static int32_t audio_buffer[DMA_BUFFER_SIZE];
@@ -45,9 +46,10 @@ static esp_err_t init_i2s(void)
         .clk_cfg = {
             .sample_rate_hz = SAMPLE_RATE,
             .clk_src = I2S_CLK_SRC_DEFAULT,
+            .ext_clk_freq_hz = 0, // No external clock
             .mclk_multiple = I2S_MCLK_MULTIPLE_384,  // Still set for internal calculation
         },
-        .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_24BIT, I2S_SLOT_MODE_STEREO),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = I2S_MCLK, 
             .bclk = I2S_DAC_BCLK,
@@ -101,7 +103,6 @@ static void audio_task(void *pvParameters)
 {
     size_t bytes_read = 0;
     size_t bytes_written = 0;
-    int frame_count = 0;
     
     ESP_LOGI(TAG, "Audio pass-through task started");
     
@@ -126,48 +127,39 @@ static void audio_task(void *pvParameters)
         }
         
         int num_samples = bytes_read / sizeof(int32_t);
-        
-        // Monitor audio levels
-        int32_t max_value = INT32_MIN;
-        int32_t min_value = INT32_MAX;
-        int64_t sum = 0;
-        
-        // Process samples
-        for (int i = 0; i < num_samples; i += 2) {
-            int32_t left = audio_buffer[i];
-            int32_t right = audio_buffer[i + 1];
-            
-            // Extract 24-bit values for monitoring
-            int32_t left_24bit = left >> 8;
-            int32_t right_24bit = right >> 8;
-            
-            // Update statistics
-            if (left_24bit > max_value) max_value = left_24bit;
-            if (left_24bit < min_value) min_value = left_24bit;
-            sum += left_24bit;
-            
-            if (right_24bit > max_value) max_value = right_24bit;
-            if (right_24bit < min_value) min_value = right_24bit;
-            sum += right_24bit;
+
+        for(int i = 0; i < num_samples; i++) {
+            audio_buffer[i] = audio_buffer[i] >> 8;
+            // audio_buffer[i] = __builtin_bswap32(audio_buffer[i]);
         }
+
+        equalizer_process(&eq, audio_buffer, num_samples);
+
+        // // Debug: Log first sample before and after EQ (only occasionally)
+        // static int debug_counter = 0;
+        // if (debug_counter == 0) {
+
+        //     ESP_LOGI(TAG, "[ 0x%08X 0x%08X 0x%08X 0x%08X 0x%08X 0x%08X 0x%08X 0x%08X 0x%08X 0x%08X ]", 
+        //         ((unsigned int)audio_buffer[0]), ((unsigned int)audio_buffer[2]), ((unsigned int)audio_buffer[4]), ((unsigned int)audio_buffer[6]), ((unsigned int)audio_buffer[8]),
+        //         ((unsigned int)audio_buffer[10]), ((unsigned int)audio_buffer[12]), ((unsigned int)audio_buffer[14]), ((unsigned int)audio_buffer[16]), ((unsigned int)audio_buffer[18]) );
+        // }
+
         
+        // debug_counter = (debug_counter + 1) % 10;  // Log every 100th buffer
+                
+
+        for(int i = 0; i < num_samples; i++) {
+            audio_buffer[i] = audio_buffer[i] << 8;
+            // audio_buffer[i] = __builtin_bswap32(audio_buffer[i]);
+        }
+
         // Write to DAC
         ret = i2s_channel_write(tx_handle, audio_buffer, bytes_read, &bytes_written, portMAX_DELAY);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "I2S write error: %s", esp_err_to_name(ret));
         }
         
-        // Report every 50 frames
-        frame_count++;
-        if (frame_count >= 50) {
-            int32_t dc_offset = sum / num_samples;
-            int32_t peak_to_peak = max_value - min_value;
-            
-            ESP_LOGI(TAG, "24bit - DC: %7ld, P2P: %8ld, Min: %8ld, Max: %8ld", 
-                     dc_offset, peak_to_peak, min_value, max_value);
-            
-            frame_count = 0;
-        }
+
     }
 }
 
@@ -191,6 +183,11 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "Failed to initialize I2S");
         return;
     }
+
+    equalizer_init(&eq, SAMPLE_RATE);
+    
+    equalizer_set_enabled(&eq, true);  // ENABLED for testing
+    ESP_LOGI(TAG, "Equalizer enabled");
     
     // Create audio task with high priority
     BaseType_t task_created = xTaskCreatePinnedToCore(
