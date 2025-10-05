@@ -1,5 +1,6 @@
 #include "serial_commands.h"
 #include "equalizer.h"
+#include "limiter.h"
 #include "audio_config.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -12,6 +13,7 @@ static const char *TAG = "CMD";
 
 // External references
 extern equalizer_t equalizer;
+extern limiter_t limiter;
 
 // VU meter state (add near the top with other external variables)
 static bool vu_meter_enabled = true;
@@ -43,9 +45,20 @@ void serial_commands_print_help(void)
     printf("                - Load EQ preset (flat, bass, vocal, rock, jazz)\n");
     printf("  eq save       - Manually save current settings to flash\n");
     printf("\n");
+    printf("Limiter Commands:\n");
+    printf("  lim show      - Display current limiter settings\n");
+    printf("  lim threshold <db>\n");
+    printf("                - Set limiter threshold (-12 to 0 dB, default -0.5)\n");
+    printf("  lim enable    - Enable limiter (clipping protection)\n");
+    printf("  lim disable   - Disable limiter (bypass)\n");
+    printf("  lim reset     - Reset limiter state\n");
+    printf("  lim stats     - Show limiter statistics\n");
+    printf("  lim save      - Manually save limiter settings to flash\n");
+    printf("\n");
     printf("Examples:\n");
     printf("  eq set 0 6.0  - Boost 60Hz by 6dB\n");
     printf("  eq pregain 3.0 - Apply 3dB pre-gain before EQ\n");
+    printf("  lim threshold -1.0 - Set limiter threshold to -1dB\n");
     printf("\n");
     printf("Note: Settings are saved to flash and restored at boot.\n");
     printf("\n");
@@ -125,6 +138,27 @@ static void show_eq_settings(void)
     for (int i = 0; i < 5; i++) {
         printf("    %d   | %-9s | %+.1f dB\n", i, band_names[i], equalizer.gain_db[i]);
     }
+    printf("\n");
+}
+
+static void show_limiter_settings(void)
+{
+    printf("\n");
+    printf("Limiter Settings:\n");
+    printf("  Status: %s\n", limiter.enabled ? "ENABLED" : "DISABLED (bypass)");
+    printf("  Threshold: %.1f dB\n", limiter_get_threshold(&limiter));
+    printf("  Attack: %.1f ms\n", LIMITER_ATTACK_MS);
+    printf("  Release: %.1f ms\n", LIMITER_RELEASE_MS);
+    printf("  Lookahead: %.1f ms\n", LIMITER_LOOKAHEAD_MS);
+    printf("\n");
+}
+
+static void show_limiter_stats(void)
+{
+    printf("\n");
+    printf("Limiter Statistics:\n");
+    printf("  Peak Reduction: %.2f dB\n", limiter_get_peak_reduction(&limiter));
+    printf("  Clips Prevented: %u\n", (unsigned int)limiter_get_clips_prevented(&limiter));
     printf("\n");
 }
 
@@ -298,6 +332,85 @@ static void process_command(char* cmd)
         else {
             printf("Unknown EQ subcommand: %s\n", token);
             printf("Try: eq show, eq set, eq pregain, eq enable, eq disable, eq reset, eq preset, eq save\n");
+        }
+    }
+    else if (strcmp(token, "lim") == 0 || strcmp(token, "limiter") == 0) {
+        token = strtok(NULL, " ");
+        if (token == NULL) {
+            printf("Error: Limiter command requires subcommand\n");
+            printf("Try: lim show, lim threshold, lim enable, lim disable, lim reset, lim stats, lim save\n");
+            return;
+        }
+        
+        if (strcmp(token, "show") == 0) {
+            show_limiter_settings();
+        }
+        else if (strcmp(token, "threshold") == 0) {
+            char* threshold_str = strtok(NULL, " ");
+            
+            if (threshold_str == NULL) {
+                printf("Error: Usage: lim threshold <db>\n");
+                printf("Example: lim threshold -1.0\n");
+                return;
+            }
+            
+            float threshold = atof(threshold_str);
+            
+            if (threshold < -12.0f || threshold > 0.0f) {
+                printf("Warning: Threshold clamped to range -12.0 to 0.0 dB\n");
+            }
+            
+            bool success = limiter_set_threshold(&limiter, threshold);
+            if (success) {
+                printf("Set limiter threshold to %.1f dB\n", limiter_get_threshold(&limiter));
+                
+                // Save settings to flash
+                esp_err_t err = limiter_save_settings(&limiter);
+                if (err != ESP_OK) {
+                    printf("Warning: Failed to save settings to flash\n");
+                }
+            } else {
+                printf("Error: Failed to set threshold\n");
+            }
+        }
+        else if (strcmp(token, "enable") == 0) {
+            limiter_set_enabled(&limiter, true);
+            printf("Limiter enabled\n");
+            
+            // Save settings to flash
+            esp_err_t err = limiter_save_settings(&limiter);
+            if (err != ESP_OK) {
+                printf("Warning: Failed to save settings to flash\n");
+            }
+        }
+        else if (strcmp(token, "disable") == 0) {
+            limiter_set_enabled(&limiter, false);
+            printf("Limiter disabled (bypass mode)\n");
+            
+            // Save settings to flash
+            esp_err_t err = limiter_save_settings(&limiter);
+            if (err != ESP_OK) {
+                printf("Warning: Failed to save settings to flash\n");
+            }
+        }
+        else if (strcmp(token, "reset") == 0) {
+            limiter_reset(&limiter);
+            printf("Limiter state reset (buffer and envelope cleared)\n");
+        }
+        else if (strcmp(token, "stats") == 0) {
+            show_limiter_stats();
+        }
+        else if (strcmp(token, "save") == 0) {
+            esp_err_t err = limiter_save_settings(&limiter);
+            if (err == ESP_OK) {
+                printf("Limiter settings saved to flash successfully\n");
+            } else {
+                printf("Error: Failed to save settings to flash: %s\n", esp_err_to_name(err));
+            }
+        }
+        else {
+            printf("Unknown limiter subcommand: %s\n", token);
+            printf("Try: lim show, lim threshold, lim enable, lim disable, lim reset, lim stats, lim save\n");
         }
     }
     else {

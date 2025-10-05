@@ -9,6 +9,7 @@
 #include "audio_config.h"
 #include "esp_pm.h"
 #include "equalizer.h"
+#include "limiter.h"
 #include "serial_commands.h"
 #include "nvs_flash.h"
 
@@ -20,6 +21,7 @@ static i2s_chan_handle_t tx_handle = NULL;
 
 // Global instances accessible to serial_commands
 equalizer_t equalizer;  // Changed from 'eq' to 'equalizer' and made non-static
+limiter_t limiter;      // True-peak limiter for clipping prevention
 
 // Audio buffer
 static int32_t audio_buffer[DMA_BUFFER_SIZE];
@@ -137,6 +139,9 @@ static void audio_task(void *pvParameters)
         }
 
         equalizer_process(&equalizer, audio_buffer, num_samples);
+        
+        // Apply limiter after EQ to prevent clipping
+        limiter_process(&limiter, audio_buffer, num_samples);
 
         // // Debug: Log first sample before and after EQ (only occasionally)
         // static int debug_counter = 0;
@@ -207,6 +212,17 @@ extern "C" void app_main(void)
         // No saved settings, use defaults
         equalizer_set_enabled(&equalizer, true);
         ESP_LOGI(TAG, "Using default equalizer settings");
+    }
+    
+    // Initialize limiter with defaults
+    limiter_init(&limiter, SAMPLE_RATE);
+    
+    // Try to load saved limiter settings from flash
+    ret = limiter_load_settings(&limiter, SAMPLE_RATE);
+    if (ret != ESP_OK) {
+        // No saved settings, use defaults
+        limiter_set_enabled(&limiter, true);
+        ESP_LOGI(TAG, "Using default limiter settings");
     }
     
     // Initialize serial command interface
