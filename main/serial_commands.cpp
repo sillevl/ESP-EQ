@@ -4,6 +4,8 @@
 #include "equalizer.h"
 #include "limiter.h"
 #include "audio_config.h"
+#include "wifi_manager.h"
+#include "mqtt_manager.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -32,6 +34,19 @@ void serial_commands_print_help(void)
     printf("System Commands:\n");
     printf("  help          - Show this help message\n");
     printf("  status        - Show system status\n");
+    printf("\n");
+    printf("WiFi Commands:\n");
+    printf("  wifi status   - Show WiFi connection status\n");
+    printf("  wifi set <ssid> <password>\n");
+    printf("                - Connect to WiFi network\n");
+    printf("  wifi disconnect - Disconnect from WiFi\n");
+    printf("\n");
+    printf("MQTT Commands:\n");
+    printf("  mqtt status   - Show MQTT connection status\n");
+    printf("  mqtt set <broker_uri>\n");
+    printf("                - Connect to MQTT broker (e.g., mqtt://192.168.1.100:1883)\n");
+    printf("  mqtt disconnect - Disconnect from MQTT broker\n");
+    printf("  mqtt publish  - Publish all current states to MQTT\n");
     printf("\n");
     printf("Subsonic Filter Commands:\n");
     printf("  sub show      - Display current subsonic filter settings\n");
@@ -258,6 +273,127 @@ static void process_command(char* cmd)
     }
     else if (strcmp(token, "status") == 0) {
         show_system_status();
+    }
+    else if (strcmp(token, "wifi") == 0) {
+        token = strtok(NULL, " ");
+        if (token == NULL) {
+            printf("Error: WiFi command requires subcommand\n");
+            printf("Try: wifi status, wifi set, wifi disconnect\n");
+            return;
+        }
+        
+        if (strcmp(token, "status") == 0) {
+            char ssid[WIFI_SSID_MAX_LEN];
+            char ip[16];
+            
+            printf("\nWiFi Status:\n");
+            if (wifi_manager_is_connected()) {
+                wifi_manager_get_ssid(ssid);
+                wifi_manager_get_ip(ip);
+                printf("  State: Connected\n");
+                printf("  SSID: %s\n", ssid);
+                printf("  IP Address: %s\n", ip);
+            } else {
+                printf("  State: Disconnected\n");
+            }
+            printf("\n");
+        }
+        else if (strcmp(token, "set") == 0) {
+            char* ssid = strtok(NULL, " ");
+            char* password = strtok(NULL, " ");
+            
+            if (ssid == NULL || password == NULL) {
+                printf("Error: Usage: wifi set <ssid> <password>\n");
+                printf("Example: wifi set MyNetwork MyPassword123\n");
+                return;
+            }
+            
+            printf("Connecting to WiFi network: %s...\n", ssid);
+            esp_err_t err = wifi_manager_set_credentials(ssid, password);
+            if (err == ESP_OK) {
+                printf("Successfully connected to WiFi!\n");
+                
+                char ip[16];
+                wifi_manager_get_ip(ip);
+                printf("IP Address: %s\n", ip);
+            } else {
+                printf("Error: Failed to connect to WiFi: %s\n", esp_err_to_name(err));
+            }
+        }
+        else if (strcmp(token, "disconnect") == 0) {
+            esp_err_t err = wifi_manager_disconnect();
+            if (err == ESP_OK) {
+                printf("Disconnected from WiFi\n");
+            } else {
+                printf("Error: %s\n", esp_err_to_name(err));
+            }
+        }
+        else {
+            printf("Unknown WiFi subcommand: %s\n", token);
+            printf("Try: wifi status, wifi set, wifi disconnect\n");
+        }
+    }
+    else if (strcmp(token, "mqtt") == 0) {
+        token = strtok(NULL, " ");
+        if (token == NULL) {
+            printf("Error: MQTT command requires subcommand\n");
+            printf("Try: mqtt status, mqtt set, mqtt disconnect, mqtt publish\n");
+            return;
+        }
+        
+        if (strcmp(token, "status") == 0) {
+            printf("\nMQTT Status:\n");
+            if (mqtt_manager_is_connected()) {
+                printf("  State: Connected\n");
+                printf("  Base Topic: %s\n", MQTT_BASE_TOPIC);
+            } else {
+                printf("  State: Disconnected\n");
+            }
+            printf("\n");
+        }
+        else if (strcmp(token, "set") == 0) {
+            char* broker = strtok(NULL, " ");
+            
+            if (broker == NULL) {
+                printf("Error: Usage: mqtt set <broker_uri>\n");
+                printf("Example: mqtt set mqtt://192.168.1.100:1883\n");
+                return;
+            }
+            
+            printf("Connecting to MQTT broker: %s...\n", broker);
+            esp_err_t err = mqtt_manager_set_broker(broker);
+            if (err == ESP_OK) {
+                printf("MQTT broker configured successfully\n");
+                printf("Note: Connection may take a few seconds\n");
+            } else {
+                printf("Error: Failed to configure MQTT broker: %s\n", esp_err_to_name(err));
+            }
+        }
+        else if (strcmp(token, "disconnect") == 0) {
+            esp_err_t err = mqtt_manager_disconnect();
+            if (err == ESP_OK) {
+                printf("Disconnected from MQTT broker\n");
+            } else {
+                printf("Error: %s\n", esp_err_to_name(err));
+            }
+        }
+        else if (strcmp(token, "publish") == 0) {
+            if (!mqtt_manager_is_connected()) {
+                printf("Error: MQTT is not connected\n");
+                return;
+            }
+            
+            esp_err_t err = mqtt_manager_publish_all_states();
+            if (err == ESP_OK) {
+                printf("Published all states to MQTT\n");
+            } else {
+                printf("Error: Failed to publish states\n");
+            }
+        }
+        else {
+            printf("Unknown MQTT subcommand: %s\n", token);
+            printf("Try: mqtt status, mqtt set, mqtt disconnect, mqtt publish\n");
+        }
     }
     else if (strcmp(token, "eq") == 0) {
         token = strtok(NULL, " ");

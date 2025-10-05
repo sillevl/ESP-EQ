@@ -15,9 +15,14 @@ A real-time audio processing platform for ESP32 using high-quality audio codecs 
 - ✅ 24-bit audio at 48kHz sample rate (configurable)
 - ✅ Low-latency audio pass-through (~80ms)
 - ✅ **5-Band Parametric Equalizer** (60Hz, 250Hz, 1kHz, 4kHz, 12kHz)
-- ✅ **Real-time Serial Command Interface** for EQ control
-- ✅ **Persistent Settings** - EQ settings saved to NVS flash
+- ✅ **WiFi Connectivity** - Remote control via WiFi network
+- ✅ **MQTT Integration** - Control all processors via MQTT protocol
+- ✅ **Real-time Serial Command Interface** for local control
+- ✅ **Persistent Settings** - All settings saved to NVS flash
 - ✅ Built-in EQ presets (Flat, Bass, Vocal, Rock, Jazz)
+- ✅ **Subsonic Filter** - DC blocking and subsonic protection
+- ✅ **Pre-Gain** - Adjustable gain stage before EQ
+- ✅ **True-Peak Limiter** - Clipping protection
 - ✅ FreeRTOS-based real-time processing
 - ✅ Optimized fixed-point biquad IIR filters (Direct Form II Transposed)
 - ✅ Modular architecture for easy DSP algorithm integration
@@ -42,8 +47,11 @@ A real-time audio processing platform for ESP32 using high-quality audio codecs 
    - Default: Bass boost preset active
    - Latency: ~80ms
 
-5. **Control via Serial**: Use serial commands to adjust EQ in real-time
+5. **Control via Serial or MQTT**: 
+   - Serial: Use serial commands to adjust all processors
+   - MQTT: Configure WiFi and MQTT for remote control
    - See [Serial Commands Guide](docs/SERIAL_COMMANDS.md)
+   - See [WiFi & MQTT Setup Guide](docs/WIFI_MQTT_SETUP.md)
 
 ## Project Structure
 
@@ -52,15 +60,19 @@ esp-dsp/
 ├── main/
 │   ├── esp-dsp.cpp           # Main application and audio processing task
 │   ├── audio_config.h        # Audio configuration and pin definitions
-│   ├── equalizer.cpp         # 5-band parametric equalizer implementation
-│   ├── equalizer.h           # Equalizer API and structures
-│   ├── serial_commands.cpp   # Serial command interface
-│   ├── serial_commands.h     # Command interface API
+│   ├── subsonic.cpp/.h       # Subsonic filter / DC blocking
+│   ├── pregain.cpp/.h        # Pre-gain processor
+│   ├── equalizer.cpp/.h      # 5-band parametric equalizer
+│   ├── limiter.cpp/.h        # True-peak limiter
+│   ├── wifi_manager.cpp/.h   # WiFi connectivity manager
+│   ├── mqtt_manager.cpp/.h   # MQTT client and topic handling
+│   ├── serial_commands.cpp/.h # Serial command interface
 │   ├── CMakeLists.txt        # Component build configuration
 │   └── Kconfig.projbuild     # menuconfig options
 ├── docs/
 │   ├── HARDWARE_SETUP.md     # Wiring and hardware guide
 │   ├── BUILD_INSTRUCTIONS.md # Detailed build instructions
+│   ├── WIFI_MQTT_SETUP.md    # WiFi and MQTT configuration guide
 │   ├── EQUALIZER.md          # Equalizer documentation and presets
 │   ├── SERIAL_COMMANDS.md    # Serial command reference
 │   ├── PERSISTENT_SETTINGS.md # NVS flash storage documentation

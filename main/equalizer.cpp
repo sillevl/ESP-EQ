@@ -1,8 +1,7 @@
 #include "equalizer.h"
 #include <string.h>
 #include <math.h>
-#include "nvs_flash.h"
-#include "nvs.h"
+#include <nvs.h>
 #include "esp_log.h"
 
 // Quality factor for peaking filters

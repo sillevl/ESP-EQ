@@ -13,6 +13,8 @@
 #include "equalizer.h"
 #include "limiter.h"
 #include "serial_commands.h"
+#include "wifi_manager.h"
+#include "mqtt_manager.h"
 #include "nvs_flash.h"
 
 static const char *TAG = "ESP-DSP";
@@ -256,6 +258,18 @@ extern "C" void app_main(void)
         // No saved settings, use defaults
         limiter_set_enabled(&limiter, true);
         ESP_LOGI(TAG, "Using default limiter settings");
+    }
+    
+    // Initialize WiFi Manager
+    ret = wifi_manager_init();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "WiFi not configured yet, use 'wifi set' command");
+    }
+    
+    // Initialize MQTT Manager (will wait for WiFi if needed)
+    ret = mqtt_manager_init();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "MQTT not configured yet, use 'mqtt set' command");
     }
     
     // Initialize serial command interface
