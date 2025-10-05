@@ -8,6 +8,7 @@
 #include "esp_err.h"
 #include "audio_config.h"
 #include "esp_pm.h"
+#include "subsonic.h"
 #include "equalizer.h"
 #include "limiter.h"
 #include "serial_commands.h"
@@ -20,6 +21,7 @@ static i2s_chan_handle_t rx_handle = NULL;
 static i2s_chan_handle_t tx_handle = NULL;
 
 // Global instances accessible to serial_commands
+subsonic_t subsonic;    // Subsonic/DC protection filter
 equalizer_t equalizer;  // Changed from 'eq' to 'equalizer' and made non-static
 limiter_t limiter;      // True-peak limiter for clipping prevention
 
@@ -138,6 +140,9 @@ static void audio_task(void *pvParameters)
             // audio_buffer[i] = __builtin_bswap32(audio_buffer[i]);
         }
 
+        // Apply subsonic filter first (DC/subsonic protection)
+        subsonic_process(&subsonic, audio_buffer, num_samples);
+        
         equalizer_process(&equalizer, audio_buffer, num_samples);
         
         // Apply limiter after EQ to prevent clipping
@@ -203,6 +208,17 @@ extern "C" void app_main(void)
         return;
     }
 
+    // Initialize subsonic filter with defaults
+    subsonic_init(&subsonic, SAMPLE_RATE);
+    
+    // Try to load saved subsonic settings from flash
+    ret = subsonic_load_settings(&subsonic, SAMPLE_RATE);
+    if (ret != ESP_OK) {
+        // No saved settings, use defaults
+        subsonic_set_enabled(&subsonic, true);
+        ESP_LOGI(TAG, "Using default subsonic filter settings");
+    }
+    
     // Initialize equalizer with defaults
     equalizer_init(&equalizer, SAMPLE_RATE);
     

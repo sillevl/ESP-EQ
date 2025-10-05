@@ -1,4 +1,5 @@
 #include "serial_commands.h"
+#include "subsonic.h"
 #include "equalizer.h"
 #include "limiter.h"
 #include "audio_config.h"
@@ -12,6 +13,7 @@
 static const char *TAG = "CMD";
 
 // External references
+extern subsonic_t subsonic;
 extern equalizer_t equalizer;
 extern limiter_t limiter;
 
@@ -28,6 +30,14 @@ void serial_commands_print_help(void)
     printf("System Commands:\n");
     printf("  help          - Show this help message\n");
     printf("  status        - Show system status\n");
+    printf("\n");
+    printf("Subsonic Filter Commands:\n");
+    printf("  sub show      - Display current subsonic filter settings\n");
+    printf("  sub freq <hz> - Set cutoff frequency (15-50 Hz, default 25)\n");
+    printf("  sub enable    - Enable subsonic filter (DC protection)\n");
+    printf("  sub disable   - Disable subsonic filter (bypass)\n");
+    printf("  sub reset     - Reset filter state\n");
+    printf("  sub save      - Manually save settings to flash\n");
     printf("\n");
     printf("Equalizer Commands:\n");
     printf("  eq show       - Display current EQ settings\n");
@@ -56,11 +66,13 @@ void serial_commands_print_help(void)
     printf("  lim save      - Manually save limiter settings to flash\n");
     printf("\n");
     printf("Examples:\n");
-    printf("  eq set 0 6.0  - Boost 60Hz by 6dB\n");
+    printf("  sub freq 28.0  - Set subsonic cutoff to 28Hz\n");
+    printf("  eq set 0 6.0   - Boost 60Hz by 6dB\n");
     printf("  eq pregain 3.0 - Apply 3dB pre-gain before EQ\n");
     printf("  lim threshold -1.0 - Set limiter threshold to -1dB\n");
     printf("\n");
     printf("Note: Settings are saved to flash and restored at boot.\n");
+    printf("Processing order: Subsonic → Equalizer → Limiter\n");
     printf("\n");
 }
 
@@ -162,6 +174,18 @@ static void show_limiter_stats(void)
     printf("\n");
 }
 
+static void show_subsonic_settings(void)
+{
+    printf("\n");
+    printf("Subsonic Filter Settings:\n");
+    printf("  Status: %s\n", subsonic_get_enabled(&subsonic) ? "ENABLED" : "DISABLED (bypass)");
+    printf("  Type: 2nd-order high-pass Butterworth\n");
+    printf("  Cutoff Frequency: %.1f Hz\n", subsonic_get_frequency(&subsonic));
+    printf("  Q Factor: %.3f\n", SUBSONIC_Q);
+    printf("  Purpose: DC blocking and subsonic protection\n");
+    printf("\n");
+}
+
 static void show_system_status(void)
 {
     printf("\n");
@@ -170,6 +194,16 @@ static void show_system_status(void)
     printf("  Channels: %d (Stereo)\n", I2S_NUM_CHANNELS);
     printf("  Buffer Size: %d samples\n", DMA_BUFFER_SIZE);
     printf("  Bit Depth: 24-bit\n");
+    printf("\n");
+    printf("DSP Processing Chain:\n");
+    printf("  1. Subsonic Filter: %s (%.1f Hz HPF)\n", 
+           subsonic_get_enabled(&subsonic) ? "ON" : "OFF",
+           subsonic_get_frequency(&subsonic));
+    printf("  2. Equalizer: %s (5-band)\n", 
+           equalizer.enabled ? "ON" : "OFF");
+    printf("  3. Limiter: %s (%.1f dB)\n", 
+           limiter.enabled ? "ON" : "OFF",
+           limiter_get_threshold(&limiter));
     printf("\n");
     printf("  Free Heap: %d bytes\n", (int) esp_get_free_heap_size());
     printf("  Min Free Heap: %d bytes\n", (int) esp_get_minimum_free_heap_size());
@@ -411,6 +445,83 @@ static void process_command(char* cmd)
         else {
             printf("Unknown limiter subcommand: %s\n", token);
             printf("Try: lim show, lim threshold, lim enable, lim disable, lim reset, lim stats, lim save\n");
+        }
+    }
+    else if (strcmp(token, "sub") == 0) {
+        token = strtok(NULL, " ");
+        if (token == NULL) {
+            printf("Error: Subsonic command requires subcommand\n");
+            printf("Try: sub show, sub freq, sub enable, sub disable, sub reset, sub save\n");
+            return;
+        }
+        
+        if (strcmp(token, "show") == 0) {
+            show_subsonic_settings();
+        }
+        else if (strcmp(token, "freq") == 0) {
+            char* freq_str = strtok(NULL, " ");
+            
+            if (freq_str == NULL) {
+                printf("Error: Usage: sub freq <hz>\n");
+                printf("Example: sub freq 25.0\n");
+                printf("Recommended range: 25-30 Hz\n");
+                return;
+            }
+            
+            float freq = atof(freq_str);
+            
+            if (freq < 15.0f || freq > 50.0f) {
+                printf("Warning: Frequency out of recommended range (15-50 Hz)\n");
+            }
+            
+            bool success = subsonic_set_frequency(&subsonic, freq, SAMPLE_RATE);
+            if (success) {
+                printf("Set subsonic cutoff frequency to %.1f Hz\n", subsonic_get_frequency(&subsonic));
+                
+                // Save settings to flash
+                esp_err_t err = subsonic_save_settings(&subsonic);
+                if (err != ESP_OK) {
+                    printf("Warning: Failed to save settings to flash\n");
+                }
+            } else {
+                printf("Error: Failed to set frequency\n");
+            }
+        }
+        else if (strcmp(token, "enable") == 0) {
+            subsonic_set_enabled(&subsonic, true);
+            printf("Subsonic filter enabled\n");
+            
+            // Save settings to flash
+            esp_err_t err = subsonic_save_settings(&subsonic);
+            if (err != ESP_OK) {
+                printf("Warning: Failed to save settings to flash\n");
+            }
+        }
+        else if (strcmp(token, "disable") == 0) {
+            subsonic_set_enabled(&subsonic, false);
+            printf("Subsonic filter disabled (bypass mode)\n");
+            
+            // Save settings to flash
+            esp_err_t err = subsonic_save_settings(&subsonic);
+            if (err != ESP_OK) {
+                printf("Warning: Failed to save settings to flash\n");
+            }
+        }
+        else if (strcmp(token, "reset") == 0) {
+            subsonic_reset(&subsonic);
+            printf("Subsonic filter state reset (history cleared)\n");
+        }
+        else if (strcmp(token, "save") == 0) {
+            esp_err_t err = subsonic_save_settings(&subsonic);
+            if (err == ESP_OK) {
+                printf("Subsonic filter settings saved to flash successfully\n");
+            } else {
+                printf("Error: Failed to save settings to flash: %s\n", esp_err_to_name(err));
+            }
+        }
+        else {
+            printf("Unknown subsonic subcommand: %s\n", token);
+            printf("Try: sub show, sub freq, sub enable, sub disable, sub reset, sub save\n");
         }
     }
     else {
