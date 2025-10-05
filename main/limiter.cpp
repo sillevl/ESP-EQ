@@ -23,9 +23,11 @@ static inline float linear_to_db(float linear) {
 
 // Fast approximation of maximum absolute value
 static inline float fast_abs_max(int32_t a, int32_t b) {
-    float abs_a = fabsf((float)a);
-    float abs_b = fabsf((float)b);
-    return (abs_a > abs_b) ? abs_a : abs_b;
+    // Use integer absolute to avoid unnecessary float ops per-sample
+    uint32_t ua = (a < 0) ? (uint32_t)(-a) : (uint32_t)a;
+    uint32_t ub = (b < 0) ? (uint32_t)(-b) : (uint32_t)b;
+    uint32_t m = (ua > ub) ? ua : ub;
+    return (float)m;
 }
 
 void limiter_init(limiter_t *limiter, uint32_t sample_rate)
@@ -59,6 +61,13 @@ void limiter_init(limiter_t *limiter, uint32_t sample_rate)
     limiter->enabled = true;
     limiter->peak_reduction_db = 0.0f;
     limiter->clip_prevented_count = 0;
+    // initialize throttling counters
+    limiter->stats_update_counter = 0;
+    limiter->min_envelope = 1.0f;
+    // callback defaults
+    limiter->trigger_cb = NULL;
+    limiter->trigger_user_ctx = NULL;
+    limiter->is_triggered = false;
     
     ESP_LOGI(TAG, "Limiter initialized:");
     ESP_LOGI(TAG, "  Threshold: %.1f dB", limiter->threshold_db);
@@ -72,38 +81,48 @@ void limiter_process(limiter_t *limiter, int32_t *buffer, int num_samples)
     if (!limiter->enabled) {
         return;  // Bypass
     }
-    
-    // Maximum value for 24-bit audio (shifted to 32-bit, so full scale is 2^31)
-    const float FULL_SCALE = 2147483648.0f;  // 2^31
+
+    // Processing runs on right-justified 24-bit samples (audio was >> 8 in the task),
+    // so treat full-scale as 24-bit (2^23). This ensures the threshold comparison
+    // matches the scale seen by the limiter when the buffer is processed.
+    const float FULL_SCALE = 8388608.0f;  // 2^23
     const float THRESHOLD_LINEAR = limiter->threshold * FULL_SCALE;
-    
+
+    // Minimum allowed envelope to avoid log10f(0) and NaNs
+    const float MIN_ENVELOPE = 1e-8f;
+
+    // Throttle expensive stats updates: compute dB only every N changes
+    const uint16_t STATS_UPDATE_INTERVAL = 16;
+
     // Process samples
     for (int i = 0; i < num_samples; i += 2) {
         // Read from lookahead buffer (this is our delayed output)
         int32_t delayed_left = limiter->lookahead_buffer[limiter->write_index];
         int32_t delayed_right = limiter->lookahead_buffer[limiter->write_index + 1];
-        
+
         // Store current input in lookahead buffer
         limiter->lookahead_buffer[limiter->write_index] = buffer[i];
         limiter->lookahead_buffer[limiter->write_index + 1] = buffer[i + 1];
-        
+
         // Advance write index (circular buffer)
         limiter->write_index += 2;
         if (limiter->write_index >= limiter->lookahead_samples) {
             limiter->write_index = 0;
         }
-        
+
         // Detect peak of current input (before delay)
         float peak = fast_abs_max(buffer[i], buffer[i + 1]);
-        
-        // Calculate desired gain
+
+        // Calculate desired gain (protect against divide-by-zero)
         float desired_gain = 1.0f;
-        if (peak > THRESHOLD_LINEAR) {
+        if (peak > THRESHOLD_LINEAR && peak > 0.0f) {
             desired_gain = THRESHOLD_LINEAR / peak;
+            if (desired_gain < MIN_ENVELOPE) desired_gain = MIN_ENVELOPE;
             limiter->clip_prevented_count++;
         }
-        
+
         // Smooth envelope follower
+        float prev_envelope = limiter->envelope;
         if (desired_gain < limiter->envelope) {
             // Attack: Fast reduction
             limiter->envelope = limiter->attack_coeff * limiter->envelope + 
@@ -113,23 +132,53 @@ void limiter_process(limiter_t *limiter, int32_t *buffer, int num_samples)
             limiter->envelope = limiter->release_coeff * limiter->envelope + 
                                (1.0f - limiter->release_coeff) * desired_gain;
         }
-        
-        // Track peak reduction for monitoring
-        float reduction_db = linear_to_db(limiter->envelope);
-        if (reduction_db < limiter->peak_reduction_db) {
-            limiter->peak_reduction_db = reduction_db;
+
+        // Ensure envelope never becomes zero or NaN
+        if (!isfinite(limiter->envelope) || limiter->envelope < MIN_ENVELOPE) {
+            limiter->envelope = MIN_ENVELOPE;
         }
-        
-        // Apply gain to delayed signal
-        int64_t output_left = ((int64_t)delayed_left * (int64_t)(limiter->envelope * 65536.0f)) >> 16;
-        int64_t output_right = ((int64_t)delayed_right * (int64_t)(limiter->envelope * 65536.0f)) >> 16;
-        
+
+        // Track peak reduction for monitoring only when envelope changed noticeably
+        if (fabsf(prev_envelope - limiter->envelope) > 1e-6f) {
+            limiter->stats_update_counter++;
+            if (limiter->stats_update_counter >= STATS_UPDATE_INTERVAL) {
+                limiter->stats_update_counter = 0;
+                // update minimal envelope and convert to dB (infrequent)
+                if (limiter->envelope < limiter->min_envelope) {
+                    limiter->min_envelope = limiter->envelope;
+                    float reduction_db = linear_to_db(limiter->min_envelope);
+                    if (reduction_db < limiter->peak_reduction_db) {
+                        limiter->peak_reduction_db = reduction_db;
+                    }
+                }
+            }
+        }
+
+        // Invoke trigger callback when limiter begins to reduce gain (transition)
+        // We consider the limiter 'triggered' if envelope becomes noticeably < 0.999
+        bool now_triggered = (limiter->envelope < 0.999f);
+        if (!limiter->is_triggered && now_triggered) {
+            limiter->is_triggered = true;
+            if (limiter->trigger_cb) {
+                // Call user callback; avoid heavy work here
+                limiter->trigger_cb(limiter, limiter->trigger_user_ctx);
+            }
+        } else if (limiter->is_triggered && !now_triggered) {
+            // Reset triggered state when envelope recovers
+            limiter->is_triggered = false;
+        }
+
+        // Apply gain to delayed signal using Q16 multiplier (faster integer multiply)
+        int32_t gain_q16 = (int32_t)(limiter->envelope * 65536.0f + 0.5f);
+        int64_t output_left = ((int64_t)delayed_left * (int64_t)gain_q16) >> 16;
+        int64_t output_right = ((int64_t)delayed_right * (int64_t)gain_q16) >> 16;
+
         // Clamp to prevent overflow (safety)
         if (output_left > 2147483647LL) output_left = 2147483647LL;
         if (output_left < -2147483648LL) output_left = -2147483648LL;
         if (output_right > 2147483647LL) output_right = 2147483647LL;
         if (output_right < -2147483648LL) output_right = -2147483648LL;
-        
+
         buffer[i] = (int32_t)output_left;
         buffer[i + 1] = (int32_t)output_right;
     }
@@ -143,6 +192,13 @@ void limiter_set_enabled(limiter_t *limiter, bool enabled)
     } else {
         ESP_LOGI(TAG, "Limiter bypassed");
     }
+}
+
+void limiter_set_trigger_callback(limiter_t *limiter, limiter_trigger_cb_t cb, void *user_ctx)
+{
+    limiter->trigger_cb = cb;
+    limiter->trigger_user_ctx = user_ctx;
+    ESP_LOGI(TAG, "Limiter trigger callback %s", cb ? "registered" : "cleared");
 }
 
 bool limiter_set_threshold(limiter_t *limiter, float threshold_db)
@@ -169,6 +225,8 @@ void limiter_reset(limiter_t *limiter)
     memset(limiter->lookahead_buffer, 0, sizeof(limiter->lookahead_buffer));
     limiter->write_index = 0;
     limiter->envelope = 1.0f;
+    limiter->stats_update_counter = 0;
+    limiter->min_envelope = 1.0f;
     
     ESP_LOGI(TAG, "Limiter state reset");
 }

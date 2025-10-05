@@ -16,6 +16,8 @@
 #include "wifi_manager.h"
 #include "mqtt_manager.h"
 #include "nvs_flash.h"
+#include "esp_task_wdt.h"
+#include "led_strip.h"
 
 static const char *TAG = "ESP-DSP";
 
@@ -31,6 +33,39 @@ limiter_t limiter;      // True-peak limiter for clipping prevention
 
 // Audio buffer
 static int32_t audio_buffer[DMA_BUFFER_SIZE];
+
+// Neopixel (WS2812) configuration
+#define NEOPIXEL_GPIO GPIO_NUM_8
+#define NEOPIXEL_LED_COUNT 1
+
+static led_strip_handle_t neopixel_strip = NULL;
+
+// LED task: polls limiter.is_triggered and updates the neopixel
+static void neopixel_task(void *pvParameters)
+{
+    // If neopixel couldn't be initialized, exit the task
+    if (neopixel_strip == NULL) {
+        vTaskDelete(NULL);
+        return;
+    }
+
+    while (1) {
+        bool triggered = limiter.is_triggered;
+
+        if (triggered) {
+            // Red (RGB order: red, green, blue)
+            led_strip_set_pixel(neopixel_strip, 0, 255, 0, 0);
+        } else {
+            // Off
+            led_strip_set_pixel(neopixel_strip, 0, 0, 0, 0);
+        }
+        // Refresh (flush to the strip)
+        led_strip_refresh(neopixel_strip);
+
+        // Poll at 50ms resolution
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
 
 /**
  * Initialize I2S channels for ADC and DAC on same peripheral
@@ -127,6 +162,17 @@ static void audio_task(void *pvParameters)
     }
     ESP_LOGI(TAG, "TX buffer pre-filled");
     
+    // Register this task with the task watchdog so long processing won't trigger
+    // the system WDT. If the project disables the WDT elsewhere this call is
+    // harmless. Use a modest timeout matching expected buffer processing time.
+    // Note: esp_task_wdt_add can return ESP_ERR_INVALID_STATE if the WDT is not
+    // initialized; we ignore that and continue.
+    esp_err_t wdt_err = esp_task_wdt_add(NULL);
+    if (wdt_err == ESP_OK) {
+        // Set a reasonable timeout (2 seconds) if supported via config; we
+        // still periodically call reset inside the loop below.
+    }
+
     while (1) {
         // Read from ADC
         esp_err_t ret = i2s_channel_read(rx_handle, audio_buffer, 
@@ -153,8 +199,13 @@ static void audio_task(void *pvParameters)
         // Apply equalizer
         equalizer_process(&equalizer, audio_buffer, num_samples);
         
-        // Apply limiter after EQ to prevent clipping
-        limiter_process(&limiter, audio_buffer, num_samples);
+    // Apply limiter after EQ to prevent clipping
+    limiter_process(&limiter, audio_buffer, num_samples);
+
+    // Kick the task watchdog to indicate we're alive and processing. This
+    // prevents a watchdog reset if DSP processing occasionally takes more
+    // time than expected. If the WDT wasn't added, this call is harmless.
+    esp_task_wdt_reset();
 
         // // Debug: Log first sample before and after EQ (only occasionally)
         // static int debug_counter = 0;
@@ -275,6 +326,32 @@ extern "C" void app_main(void)
     // Initialize serial command interface
     serial_commands_init();
     ESP_LOGI(TAG, "Serial command interface started");
+
+    // Initialize neopixel (WS2812) strip using the led_strip component
+    led_strip_config_t strip_cfg = {
+        .strip_gpio_num = NEOPIXEL_GPIO,
+        .max_leds = NEOPIXEL_LED_COUNT,
+        .led_model = LED_MODEL_WS2812,
+        .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
+        .flags = { .invert_out = 0 }
+    };
+
+    led_strip_rmt_config_t rmt_cfg = {
+        .clk_src = RMT_CLK_SRC_DEFAULT,
+        .resolution_hz = 10000000, // 10 MHz default resolution
+        .mem_block_symbols = 0,
+        .flags = { .with_dma = 0 }
+    };
+
+    led_strip_handle_t strip_handle = NULL;
+    ret = led_strip_new_rmt_device(&strip_cfg, &rmt_cfg, &strip_handle);
+    if (ret == ESP_OK && strip_handle != NULL) {
+        neopixel_strip = strip_handle;
+        ESP_LOGI(TAG, "Neopixel initialized on GPIO %d", NEOPIXEL_GPIO);
+        xTaskCreate(neopixel_task, "neopixel_task", 2048, NULL, tskIDLE_PRIORITY + 1, NULL);
+    } else {
+        ESP_LOGW(TAG, "Failed to initialize neopixel strip instance: %s", esp_err_to_name(ret));
+    }
     
     // Create audio task with high priority
     BaseType_t task_created = xTaskCreatePinnedToCore(

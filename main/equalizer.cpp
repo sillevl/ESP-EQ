@@ -92,6 +92,15 @@ void equalizer_process(equalizer_t *eq, int32_t *buffer, int num_samples)
     if (!eq->enabled) {
         return;  // Bypass
     }
+
+    // Quick optimization: if all band gains are exactly 0.0f then the filters
+    // are unity and we can skip processing entirely. This avoids costly
+    // multipass processing when equalizer is enabled but set to flat.
+    bool all_zero = true;
+    for (int b = 0; b < EQ_BANDS; ++b) {
+        if (eq->gain_db[b] != 0.0f) { all_zero = false; break; }
+    }
+    if (all_zero) return;
     
     // Process each band sequentially (cascade)
     for (int band = 0; band < EQ_BANDS; band++) {

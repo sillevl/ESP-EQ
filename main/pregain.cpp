@@ -5,7 +5,7 @@
 #include "esp_log.h"
 
 // NVS storage keys
-#define NVS_NAMESPACE "pregain_settings"
+#define NVS_NAMESPACE "pregain_conf"
 #define NVS_KEY_ENABLED "enabled"
 #define NVS_KEY_GAIN "gain"
 

@@ -15,8 +15,16 @@
 // 5ms at 48kHz stereo = 5 * 48 * 2 = 480 samples
 #define MAX_LOOKAHEAD_SAMPLES   512
 
+// Forward declare struct name so callback can reference it
+typedef struct limiter_t limiter_t;
+
+// Callback invoked when limiter becomes active (starts reducing gain).
+// @param limiter Pointer to the limiter instance
+// @param user_ctx User-provided context pointer set when registering the callback
+typedef void (*limiter_trigger_cb_t)(limiter_t *limiter, void *user_ctx);
+
 // Limiter structure
-typedef struct {
+typedef struct limiter_t {
     // Configuration
     float threshold;                        // Linear threshold (0.0 to 1.0)
     float threshold_db;                     // Threshold in dB
@@ -32,8 +40,15 @@ typedef struct {
     // Statistics
     float peak_reduction_db;                // Maximum reduction applied (for monitoring)
     uint32_t clip_prevented_count;          // Number of clips prevented
+    // Internal counters to throttle expensive stats updates
+    uint16_t stats_update_counter;
+    float min_envelope;                     // Minimum envelope observed (linear)
     
     bool enabled;                           // Enable/disable limiter
+    // Trigger callback (optional)
+    limiter_trigger_cb_t trigger_cb;        // Called when limiter starts limiting
+    void *trigger_user_ctx;                 // User context passed to callback
+    bool is_triggered;                      // Internal state: currently limiting
 } limiter_t;
 
 /**
@@ -124,5 +139,14 @@ esp_err_t limiter_save_settings(limiter_t *limiter);
  * @return ESP_OK on success, error code otherwise
  */
 esp_err_t limiter_load_settings(limiter_t *limiter, uint32_t sample_rate);
+
+/**
+ * Register or clear a trigger callback
+ *
+ * @param limiter Pointer to limiter structure
+ * @param cb Callback to call when limiter begins limiting, or NULL to clear
+ * @param user_ctx User-provided context pointer passed to the callback
+ */
+void limiter_set_trigger_callback(limiter_t *limiter, limiter_trigger_cb_t cb, void *user_ctx);
 
 #endif // LIMITER_H
