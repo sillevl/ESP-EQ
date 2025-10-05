@@ -9,6 +9,7 @@
 #include "audio_config.h"
 #include "esp_pm.h"
 #include "subsonic.h"
+#include "pregain.h"
 #include "equalizer.h"
 #include "limiter.h"
 #include "serial_commands.h"
@@ -22,6 +23,7 @@ static i2s_chan_handle_t tx_handle = NULL;
 
 // Global instances accessible to serial_commands
 subsonic_t subsonic;    // Subsonic/DC protection filter
+pregain_t pregain;      // Pre-gain processor (applied before EQ)
 equalizer_t equalizer;  // Changed from 'eq' to 'equalizer' and made non-static
 limiter_t limiter;      // True-peak limiter for clipping prevention
 
@@ -143,6 +145,10 @@ static void audio_task(void *pvParameters)
         // Apply subsonic filter first (DC/subsonic protection)
         subsonic_process(&subsonic, audio_buffer, num_samples);
         
+        // Apply pre-gain before EQ
+        pregain_process(&pregain, audio_buffer, num_samples);
+        
+        // Apply equalizer
         equalizer_process(&equalizer, audio_buffer, num_samples);
         
         // Apply limiter after EQ to prevent clipping
@@ -217,6 +223,17 @@ extern "C" void app_main(void)
         // No saved settings, use defaults
         subsonic_set_enabled(&subsonic, true);
         ESP_LOGI(TAG, "Using default subsonic filter settings");
+    }
+    
+    // Initialize pre-gain with defaults
+    pregain_init(&pregain);
+    
+    // Try to load saved pre-gain settings from flash
+    ret = pregain_load_settings(&pregain);
+    if (ret != ESP_OK) {
+        // No saved settings, use defaults
+        pregain_set_enabled(&pregain, true);
+        ESP_LOGI(TAG, "Using default pre-gain settings");
     }
     
     // Initialize equalizer with defaults

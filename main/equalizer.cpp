@@ -12,7 +12,6 @@
 #define NVS_NAMESPACE "eq_settings"
 #define NVS_KEY_ENABLED "enabled"
 #define NVS_KEY_BAND_PREFIX "band_"
-#define NVS_KEY_PRE_GAIN "pre_gain"
 
 static const char *TAG = "EQUALIZER";
 
@@ -55,9 +54,6 @@ void equalizer_init(equalizer_t *eq, uint32_t sample_rate)
         eq->gain_db[i] = 0.0f;
     }
     
-    // Set default pre-gain to 0dB
-    eq->pre_gain_db = 0.0f;
-    
     // Calculate initial filter coefficients (all at 0dB = unity)
     const float frequencies[] = {EQ_BAND_1_FREQ, EQ_BAND_2_FREQ, EQ_BAND_3_FREQ, 
                                   EQ_BAND_4_FREQ, EQ_BAND_5_FREQ};
@@ -96,18 +92,6 @@ void equalizer_process(equalizer_t *eq, int32_t *buffer, int num_samples)
 {
     if (!eq->enabled) {
         return;  // Bypass
-    }
-    
-    // Apply pre-gain if non-zero
-    if (eq->pre_gain_db != 0.0f) {
-        float pre_gain_linear = powf(10.0f, eq->pre_gain_db / 20.0f);
-        for (int i = 0; i < num_samples; i++) {
-            int64_t temp = (int64_t)(buffer[i] * pre_gain_linear);
-            // Clamp to prevent overflow
-            if (temp > 2147483647LL) temp = 2147483647LL;
-            if (temp < -2147483648LL) temp = -2147483648LL;
-            buffer[i] = (int32_t)temp;
-        }
     }
     
     // Process each band sequentially (cascade)
@@ -175,21 +159,6 @@ void equalizer_reset(equalizer_t *eq)
     }
 }
 
-bool equalizer_set_pre_gain(equalizer_t *eq, float gain_db)
-{
-    // Clamp gain to reasonable range
-    if (gain_db < -12.0f) gain_db = -12.0f;
-    if (gain_db > 12.0f) gain_db = 12.0f;
-    
-    eq->pre_gain_db = gain_db;
-    return true;
-}
-
-float equalizer_get_pre_gain(equalizer_t *eq)
-{
-    return eq->pre_gain_db;
-}
-
 esp_err_t equalizer_save_settings(equalizer_t *eq)
 {
     nvs_handle_t nvs_handle;
@@ -206,15 +175,6 @@ esp_err_t equalizer_save_settings(equalizer_t *eq)
     err = nvs_set_u8(nvs_handle, NVS_KEY_ENABLED, eq->enabled ? 1 : 0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Error saving enabled state: %s", esp_err_to_name(err));
-        nvs_close(nvs_handle);
-        return err;
-    }
-    
-    // Save pre-gain (convert float to int32 to store in NVS)
-    int32_t pre_gain_fixed = (int32_t)(eq->pre_gain_db * 100.0f);
-    err = nvs_set_i32(nvs_handle, NVS_KEY_PRE_GAIN, pre_gain_fixed);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Error saving pre-gain: %s", esp_err_to_name(err));
         nvs_close(nvs_handle);
         return err;
     }
@@ -268,15 +228,8 @@ esp_err_t equalizer_load_settings(equalizer_t *eq, uint32_t sample_rate)
     if (err == ESP_OK) {
         eq->enabled = (enabled_u8 != 0);
     }
-    bool settings_loaded = false;
     
-    // Load pre-gain
-    int32_t pre_gain_fixed = 0;
-    err = nvs_get_i32(nvs_handle, NVS_KEY_PRE_GAIN, &pre_gain_fixed);
-    if (err == ESP_OK) {
-        eq->pre_gain_db = (float)pre_gain_fixed / 100.0f;
-        settings_loaded = true;
-    }
+    bool settings_loaded = false;
     
     // Load band gains
     for (int i = 0; i < EQ_BANDS; i++) {
@@ -298,7 +251,6 @@ esp_err_t equalizer_load_settings(equalizer_t *eq, uint32_t sample_rate)
     if (settings_loaded) {
         ESP_LOGI(TAG, "Equalizer settings loaded from flash:");
         ESP_LOGI(TAG, "  Status: %s", eq->enabled ? "ENABLED" : "DISABLED");
-        ESP_LOGI(TAG, "  Pre-gain: %.1f dB", eq->pre_gain_db);
         ESP_LOGI(TAG, "  60Hz:   %.1f dB", eq->gain_db[0]);
         ESP_LOGI(TAG, "  250Hz:  %.1f dB", eq->gain_db[1]);
         ESP_LOGI(TAG, "  1kHz:   %.1f dB", eq->gain_db[2]);

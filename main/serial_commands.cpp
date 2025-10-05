@@ -1,5 +1,6 @@
 #include "serial_commands.h"
 #include "subsonic.h"
+#include "pregain.h"
 #include "equalizer.h"
 #include "limiter.h"
 #include "audio_config.h"
@@ -14,6 +15,7 @@ static const char *TAG = "CMD";
 
 // External references
 extern subsonic_t subsonic;
+extern pregain_t pregain;
 extern equalizer_t equalizer;
 extern limiter_t limiter;
 
@@ -39,14 +41,19 @@ void serial_commands_print_help(void)
     printf("  sub reset     - Reset filter state\n");
     printf("  sub save      - Manually save settings to flash\n");
     printf("\n");
+    printf("Pre-Gain Commands:\n");
+    printf("  gain show     - Display current pre-gain settings\n");
+    printf("  gain set <db> - Set pre-gain (-12 to +12 dB, default 0)\n");
+    printf("                  (Settings are automatically saved to flash)\n");
+    printf("  gain enable   - Enable pre-gain processing\n");
+    printf("  gain disable  - Disable pre-gain (bypass)\n");
+    printf("  gain save     - Manually save settings to flash\n");
+    printf("\n");
     printf("Equalizer Commands:\n");
     printf("  eq show       - Display current EQ settings\n");
     printf("  eq set <band> <gain>\n");
     printf("                - Set band gain (band: 0-4, gain: -12 to +12 dB)\n");
     printf("                  Bands: 0=60Hz, 1=250Hz, 2=1kHz, 3=4kHz, 4=12kHz\n");
-    printf("                  (Settings are automatically saved to flash)\n");
-    printf("  eq pregain <gain>\n");
-    printf("                - Set pre-gain applied before EQ (-12 to +12 dB)\n");
     printf("                  (Settings are automatically saved to flash)\n");
     printf("  eq enable     - Enable equalizer processing\n");
     printf("  eq disable    - Disable equalizer (bypass)\n");
@@ -67,12 +74,12 @@ void serial_commands_print_help(void)
     printf("\n");
     printf("Examples:\n");
     printf("  sub freq 28.0  - Set subsonic cutoff to 28Hz\n");
+    printf("  gain set 3.0   - Apply 3dB pre-gain\n");
     printf("  eq set 0 6.0   - Boost 60Hz by 6dB\n");
-    printf("  eq pregain 3.0 - Apply 3dB pre-gain before EQ\n");
     printf("  lim threshold -1.0 - Set limiter threshold to -1dB\n");
     printf("\n");
     printf("Note: Settings are saved to flash and restored at boot.\n");
-    printf("Processing order: Subsonic → Equalizer → Limiter\n");
+    printf("Processing order: Subsonic → Pre-Gain → Equalizer → Limiter\n");
     printf("\n");
 }
 
@@ -143,13 +150,21 @@ static void show_eq_settings(void)
     printf("\n");
     printf("Equalizer Settings:\n");
     printf("  Status: %s\n", equalizer.enabled ? "ENABLED" : "DISABLED (bypass)");
-    printf("  Pre-gain: %+.1f dB\n", equalizer.pre_gain_db);
     printf("\n");
     printf("  Band  | Frequency | Gain\n");
     printf("  ------|-----------|--------\n");
     for (int i = 0; i < 5; i++) {
         printf("    %d   | %-9s | %+.1f dB\n", i, band_names[i], equalizer.gain_db[i]);
     }
+    printf("\n");
+}
+
+static void show_pregain_settings(void)
+{
+    printf("\n");
+    printf("Pre-Gain Settings:\n");
+    printf("  Status: %s\n", pregain_is_enabled(&pregain) ? "ENABLED" : "DISABLED (bypass)");
+    printf("  Gain: %+.1f dB (%.3fx linear)\n", pregain_get_gain(&pregain), pregain.gain_linear);
     printf("\n");
 }
 
@@ -199,9 +214,12 @@ static void show_system_status(void)
     printf("  1. Subsonic Filter: %s (%.1f Hz HPF)\n", 
            subsonic_get_enabled(&subsonic) ? "ON" : "OFF",
            subsonic_get_frequency(&subsonic));
-    printf("  2. Equalizer: %s (5-band)\n", 
+    printf("  2. Pre-Gain: %s (%+.1f dB)\n", 
+           pregain_is_enabled(&pregain) ? "ON" : "OFF",
+           pregain_get_gain(&pregain));
+    printf("  3. Equalizer: %s (5-band)\n", 
            equalizer.enabled ? "ON" : "OFF");
-    printf("  3. Limiter: %s (%.1f dB)\n", 
+    printf("  4. Limiter: %s (%.1f dB)\n", 
            limiter.enabled ? "ON" : "OFF",
            limiter_get_threshold(&limiter));
     printf("\n");
@@ -308,34 +326,6 @@ static void process_command(char* cmd)
                 printf("Warning: Failed to save settings to flash\n");
             }
         }
-        else if (strcmp(token, "pregain") == 0) {
-            char* gain_str = strtok(NULL, " ");
-            
-            if (gain_str == NULL) {
-                printf("Error: Usage: eq pregain <gain>\n");
-                printf("Example: eq pregain 3.0\n");
-                return;
-            }
-            
-            float gain = atof(gain_str);
-            
-            if (gain < -12.0f || gain > 12.0f) {
-                printf("Warning: Pre-gain clamped to range -12.0 to +12.0 dB\n");
-            }
-            
-            bool success = equalizer_set_pre_gain(&equalizer, gain);
-            if (success) {
-                printf("Set pre-gain to %.1f dB\n", equalizer_get_pre_gain(&equalizer));
-                
-                // Save settings to flash
-                esp_err_t err = equalizer_save_settings(&equalizer);
-                if (err != ESP_OK) {
-                    printf("Warning: Failed to save settings to flash\n");
-                }
-            } else {
-                printf("Error: Failed to set pre-gain\n");
-            }
-        }
         else if (strcmp(token, "reset") == 0) {
             equalizer_reset(&equalizer);
             printf("Equalizer state reset (filter history cleared)\n");
@@ -365,7 +355,7 @@ static void process_command(char* cmd)
         }
         else {
             printf("Unknown EQ subcommand: %s\n", token);
-            printf("Try: eq show, eq set, eq pregain, eq enable, eq disable, eq reset, eq preset, eq save\n");
+            printf("Try: eq show, eq set, eq enable, eq disable, eq reset, eq preset, eq save\n");
         }
     }
     else if (strcmp(token, "lim") == 0 || strcmp(token, "limiter") == 0) {
@@ -445,6 +435,78 @@ static void process_command(char* cmd)
         else {
             printf("Unknown limiter subcommand: %s\n", token);
             printf("Try: lim show, lim threshold, lim enable, lim disable, lim reset, lim stats, lim save\n");
+        }
+    }
+    else if (strcmp(token, "gain") == 0 || strcmp(token, "pregain") == 0) {
+        token = strtok(NULL, " ");
+        if (token == NULL) {
+            printf("Error: Pre-gain command requires subcommand\n");
+            printf("Try: gain show, gain set, gain enable, gain disable, gain save\n");
+            return;
+        }
+        
+        if (strcmp(token, "show") == 0) {
+            show_pregain_settings();
+        }
+        else if (strcmp(token, "set") == 0) {
+            char* gain_str = strtok(NULL, " ");
+            
+            if (gain_str == NULL) {
+                printf("Error: Usage: gain set <db>\n");
+                printf("Example: gain set 3.0\n");
+                return;
+            }
+            
+            float gain = atof(gain_str);
+            
+            if (gain < -12.0f || gain > 12.0f) {
+                printf("Warning: Pre-gain clamped to range -12.0 to +12.0 dB\n");
+            }
+            
+            bool success = pregain_set_gain(&pregain, gain);
+            if (success) {
+                printf("Set pre-gain to %.1f dB (%.3fx linear)\n", pregain_get_gain(&pregain), pregain.gain_linear);
+                
+                // Save settings to flash
+                esp_err_t err = pregain_save_settings(&pregain);
+                if (err != ESP_OK) {
+                    printf("Warning: Failed to save settings to flash\n");
+                }
+            } else {
+                printf("Error: Failed to set pre-gain\n");
+            }
+        }
+        else if (strcmp(token, "enable") == 0) {
+            pregain_set_enabled(&pregain, true);
+            printf("Pre-gain enabled\n");
+            
+            // Save settings to flash
+            esp_err_t err = pregain_save_settings(&pregain);
+            if (err != ESP_OK) {
+                printf("Warning: Failed to save settings to flash\n");
+            }
+        }
+        else if (strcmp(token, "disable") == 0) {
+            pregain_set_enabled(&pregain, false);
+            printf("Pre-gain disabled (bypass mode)\n");
+            
+            // Save settings to flash
+            esp_err_t err = pregain_save_settings(&pregain);
+            if (err != ESP_OK) {
+                printf("Warning: Failed to save settings to flash\n");
+            }
+        }
+        else if (strcmp(token, "save") == 0) {
+            esp_err_t err = pregain_save_settings(&pregain);
+            if (err == ESP_OK) {
+                printf("Pre-gain settings saved to flash successfully\n");
+            } else {
+                printf("Error: Failed to save settings to flash: %s\n", esp_err_to_name(err));
+            }
+        }
+        else {
+            printf("Unknown pre-gain subcommand: %s\n", token);
+            printf("Try: gain show, gain set, gain enable, gain disable, gain save\n");
         }
     }
     else if (strcmp(token, "sub") == 0) {
